@@ -33,6 +33,34 @@ class UserCreate(BaseModel):
     role: UserRole = UserRole.RECRUITER
 
 
+class UserUpdate(BaseModel):
+    """Admin-editable fields.
+
+    Note what is absent: ``email`` and ``password``. Changing either is an
+    identity operation that belongs behind re-authentication, not behind a
+    general-purpose PATCH -- and ``org_id`` is absent because moving a user
+    between tenants is not an edit, it is a security event.
+    """
+
+    full_name: str | None = Field(default=None, max_length=200)
+    role: UserRole | None = None
+    is_active: bool | None = None
+
+
+class CandidateCreate(BaseModel):
+    email: EmailStr
+    full_name: str | None = Field(default=None, max_length=200)
+    phone: str | None = Field(default=None, max_length=50)
+    # The recruiter's own ATS identifier, so imported candidates can be matched back.
+    external_ref: str | None = Field(default=None, max_length=200)
+
+
+class CandidateUpdate(BaseModel):
+    full_name: str | None = Field(default=None, max_length=200)
+    phone: str | None = Field(default=None, max_length=50)
+    external_ref: str | None = Field(default=None, max_length=200)
+
+
 class CandidateRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -41,4 +69,5 @@ class CandidateRead(BaseModel):
     email: EmailStr
     full_name: str | None = None
     phone: str | None = None
+    external_ref: str | None = None
     created_at: datetime

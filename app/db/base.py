@@ -26,6 +26,14 @@ NAMING_CONVENTION = {
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
+    # Server-side defaults (gen_random_uuid, now(), and especially the
+    # onupdate=now() on updated_at) are expired after a flush and reloaded on next
+    # access. Under asyncio that reload is a lazy IO, so serializing a
+    # just-updated row raises MissingGreenlet instead of returning a timestamp.
+    # eager_defaults makes the flush fetch them inline via RETURNING, which costs
+    # nothing extra on Postgres -- the INSERT/UPDATE already round-trips.
+    __mapper_args__ = {"eager_defaults": True}
+
 
 class TimestampMixin:
     created_at: Mapped[datetime] = mapped_column(
@@ -60,11 +68,23 @@ def uuid_pk() -> Mapped[uuid.UUID]:
 
 
 # Tables carrying org_id, filtered by org alone.
-TENANT_TABLES: list[str] = ["users", "candidates", "interviews", "invites"]
+TENANT_TABLES: list[str] = [
+    "users",
+    "candidates",
+    "interviews",
+    "invites",
+    "jobs",
+    "job_descriptions",
+]
 
 # Tables where org membership is not sufficient: a candidate actor is narrowed to
 # rows it owns. Maps table -> the column holding the owning candidate id.
 CANDIDATE_SCOPED: dict[str, str] = {"interviews": "candidate_id", "candidates": "id"}
 
 # Tables a candidate actor must never read at all.
-USER_ONLY_TABLES: list[str] = ["users", "invites"]
+#
+# Jobs are here because a candidate has no business enumerating an org's open
+# roles, headcount or salary bands. The interview pipeline does read the job
+# description, but it does so server-side under the recruiter/system context that
+# assembles the prompt -- never through the candidate's own token.
+USER_ONLY_TABLES: list[str] = ["users", "invites", "jobs", "job_descriptions"]

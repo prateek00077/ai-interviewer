@@ -15,6 +15,7 @@ from sqlalchemy.exc import ProgrammingError
 from app.db.base import CANDIDATE_SCOPED, TENANT_TABLES
 from app.db.rls import all_tables
 from app.models.interview import Interview
+from app.models.job import Job, JobDescription
 from app.models.org import Organization
 from app.models.user import Candidate, User
 
@@ -198,6 +199,51 @@ async def test_candidate_actor_cannot_read_users_or_invites(tenant_session, org_
     async with tenant_session(org_a.org_id, "candidate", org_a.candidate_id) as s:
         assert (await s.execute(select(User))).scalars().all() == []
         assert (await s.execute(text("SELECT * FROM invites"))).all() == []
+
+
+# --- Jobs -------------------------------------------------------------------
+
+
+async def test_jobs_are_isolated_by_org(tenant_session, org_a, org_b):
+    """A bare SELECT over jobs and descriptions must see only the caller's org."""
+    for org, title in ((org_a, "Alpha Role"), (org_b, "Bravo Role")):
+        async with tenant_session(org.org_id, "user", org.user_id) as s:
+            job = Job(org_id=org.org_id, title=title, created_by_user_id=org.user_id)
+            s.add(job)
+            await s.flush()
+            s.add(
+                JobDescription(
+                    org_id=org.org_id,
+                    job_id=job.id,
+                    content=f"Description for {title}.",
+                    is_active=True,
+                )
+            )
+
+    async with tenant_session(org_a.org_id, "user", org_a.user_id) as s:
+        assert [j.title for j in (await s.execute(select(Job))).scalars()] == ["Alpha Role"]
+        descriptions = (await s.execute(select(JobDescription))).scalars().all()
+        assert [d.content for d in descriptions] == ["Description for Alpha Role."]
+
+
+async def test_candidate_actor_cannot_read_jobs(tenant_session, org_a):
+    """A candidate must not be able to enumerate an org's open roles."""
+    async with tenant_session(org_a.org_id, "user", org_a.user_id) as s:
+        job = Job(org_id=org_a.org_id, title="Confidential Role", created_by_user_id=org_a.user_id)
+        s.add(job)
+        await s.flush()
+        s.add(JobDescription(org_id=org_a.org_id, job_id=job.id, content="Salary band included."))
+
+    async with tenant_session(org_a.org_id, "candidate", org_a.candidate_id) as s:
+        assert (await s.execute(select(Job))).scalars().all() == []
+        assert (await s.execute(select(JobDescription))).scalars().all() == []
+
+
+async def test_cannot_insert_a_job_into_another_org(tenant_session, org_a, org_b):
+    with pytest.raises(ProgrammingError, match="row-level security"):
+        async with tenant_session(org_a.org_id, "user", org_a.user_id) as s:
+            s.add(Job(org_id=org_b.org_id, title="Smuggled Role"))
+            await s.flush()
 
 
 async def test_candidate_actor_cannot_write(tenant_session, org_a):
