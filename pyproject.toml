@@ -59,6 +59,11 @@ dependencies = [
 # `pipecat-ai[riva]` fails on current versions; most tutorials online are stale.
 voice = [
     "pipecat-ai[nvidia,silero,runner,webrtc,websocket,openai]==1.3.0",
+    # pipecat imports `audioop`, which PEP 594 removed from the stdlib in 3.13.
+    # Without this the voice extra fails at import on 3.13+ while the core app
+    # is perfectly happy, so the failure looks like a pipecat bug rather than a
+    # missing backport. audioop-lts itself requires >=3.13, hence the marker.
+    "audioop-lts>=0.2; python_version >= '3.13'",
 ]
 # The Riva gRPC client alone. scripts/check_nim.py needs it to probe ASR and TTS,
 # and that check must be runnable before committing to the full voice install.
@@ -111,5 +116,5 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 # boto3/botocore ship no type information. Silencing the import keeps the rest of
 # app/integrations/storage.py type-checked rather than untyped wholesale.
 [[tool.mypy.overrides]]
-module = ["boto3.*", "botocore.*", "celery.*"]
+module = ["boto3.*", "botocore.*", "celery.*", "riva.*"]
 ignore_missing_imports = true

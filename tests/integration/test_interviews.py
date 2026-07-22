@@ -495,3 +495,46 @@ async def test_the_reaper_leaves_live_interviews_alone(registered_org, invited, 
         assert await interview_service.expire_stale(s, older_than_hours=0) == 0
         interview = await interview_service.get_interview(s, interview_id)
         assert interview.status is InterviewStatus.IN_PROGRESS
+
+
+# --- Reconnect ---------------------------------------------------------------
+
+
+async def test_a_superseded_session_does_not_end_the_interview(
+    api_client, registered_org, invited, local_bus
+):
+    """A candidate whose browser crashes reconnects, which supersedes the old
+    session. That must not end the interview -- the multi-use invite exists for
+    exactly this case, and ending it here would make the reconnect impossible.
+
+    The failure mode this pins: "superseded" falling through to the unknown-
+    reason default (ABANDONED), which is terminal, after which the replacement
+    session's SessionStarted is an illegal transition and is silently swallowed
+    by the bus. The candidate is left permanently locked out.
+    """
+    org_id = uuid.UUID(registered_org["org_id"])
+    interview_id = uuid.UUID(invited["interview_id"])
+
+    local_bus.publish(SessionStarted(org_id=org_id, interview_id=interview_id))
+    await local_bus.drain()
+
+    # The old session is torn down as the new one takes over.
+    local_bus.publish(
+        SessionEnded(org_id=org_id, interview_id=interview_id, reason="superseded")
+    )
+    await local_bus.drain()
+
+    response = await api_client.get(
+        f"/api/v1/interviews/{interview_id}", headers=_auth(registered_org)
+    )
+    assert response.json()["status"] == "IN_PROGRESS", (
+        "a reconnect ended the interview it was reconnecting to"
+    )
+
+    # And the replacement session can still start.
+    local_bus.publish(SessionStarted(org_id=org_id, interview_id=interview_id))
+    await local_bus.drain()
+    response = await api_client.get(
+        f"/api/v1/interviews/{interview_id}", headers=_auth(registered_org)
+    )
+    assert response.json()["status"] == "IN_PROGRESS"

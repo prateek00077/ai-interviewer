@@ -41,6 +41,18 @@ END_REASON_STATUS: dict[str, InterviewStatus] = {
     "timed_out": InterviewStatus.COMPLETED,
 }
 
+# Reasons that end a SESSION without ending the INTERVIEW. A reconnecting
+# candidate supersedes their own previous session, and the interview must stay
+# live for the replacement to attach to.
+#
+# The voice module does not publish these at all -- see session_manager._finalise
+# -- but the two modules communicate by string, and a mismatch here is precisely
+# how a candidate who merely reconnected once ended up permanently locked out:
+# an unrecognised reason falls to the ABANDONED default, which is terminal, and
+# the replacement session's SessionStarted then dies as an illegal transition
+# inside a fire-and-forget handler where nothing surfaces it.
+NON_TERMINAL_REASONS: frozenset[str] = frozenset({"superseded"})
+
 
 # --- Reads ------------------------------------------------------------------
 
@@ -158,8 +170,11 @@ async def finish(
     a clean one must not be an error.
     """
     interview = await get_interview(session, interview_id)
-    target = END_REASON_STATUS.get(reason, InterviewStatus.ABANDONED)
 
+    if reason in NON_TERMINAL_REASONS:
+        return interview
+
+    target = END_REASON_STATUS.get(reason, InterviewStatus.ABANDONED)
     if state_machine.is_terminal(interview.status):
         return interview
 

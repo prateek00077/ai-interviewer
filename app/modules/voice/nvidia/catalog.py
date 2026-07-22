@@ -65,6 +65,24 @@ class ServiceSpec:
     def option(self, key: str, default: Any = None) -> Any:
         return self.options.get(key, default)
 
+    @property
+    def grpc_server(self) -> str:
+        """The gRPC address, asserted non-null.
+
+        ``_to_spec`` already rejects a grpc entry without one, but the field is
+        Optional because REST specs have none. This narrows it for callers
+        rather than making each one repeat the check.
+        """
+        if not self.server:
+            raise ValueError(f"service {self.name!r} has no gRPC server configured")
+        return self.server
+
+    @property
+    def rest_base_url(self) -> str:
+        if not self.base_url:
+            raise ValueError(f"service {self.name!r} has no REST base_url configured")
+        return self.base_url
+
 
 _KNOWN_KEYS = frozenset(
     {"provider", "transport", "base_url", "server", "use_ssl", "model", "function_id"}

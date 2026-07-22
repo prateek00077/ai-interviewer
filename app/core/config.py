@@ -59,6 +59,16 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # --- Interview ---
+    # Silence before a candidate's turn is considered finished. Short by
+    # design -- the ASR's own end-of-utterance logic runs alongside it.
+    vad_stop_secs: float = 0.2
+    # Magpie's cold start is real (687ms measured). Session start waits for a
+    # warm TTS rather than opening with dead air.
+    connect_prewarm_timeout_secs: float = 45.0
+    # STUN servers for WebRTC NAT traversal. Empty means host candidates only,
+    # which works locally and not across the internet. TURN is still needed for
+    # candidates behind a symmetric NAT; see docs before deploying.
+    webrtc_stun_urls: Annotated[list[str], NoDecode] = Field(default_factory=list)
     # A hard cap on one session. Protects the turn budget, the API bill, and a
     # candidate who walked away from their laptop with the mic open.
     max_interview_minutes: int = 45
@@ -92,7 +102,7 @@ class Settings(BaseSettings):
     nim_profile: Literal["cloud", "local"] = "cloud"
     nim_request_timeout_secs: float = 60.0
 
-    @field_validator("cors_origins", mode="before")
+    @field_validator("cors_origins", "webrtc_stun_urls", mode="before")
     @classmethod
     def _split_csv(cls, v: object) -> object:
         if isinstance(v, str):

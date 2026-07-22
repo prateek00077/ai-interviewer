@@ -44,6 +44,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # Live voice sessions first: each one is a real person mid-sentence, and
+        # ending them cleanly is what flushes the final turn and uploads the
+        # recording. Only then drain the bus that carries those events.
+        from app.modules.voice import session_manager
+
+        await session_manager.stop_all(reason="abandoned")
+
         # Let in-flight handlers finish before the loop closes, so the last turn
         # of a live interview is not lost on shutdown.
         await bus.drain()
