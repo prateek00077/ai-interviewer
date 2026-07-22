@@ -81,6 +81,9 @@ TENANT_TABLES: list[str] = [
     "question_plans",
     "planned_questions",
     "rubric_criteria",
+    "proctoring_policies",
+    "proctoring_events",
+    "proctoring_verdicts",
 ]
 
 # Tables where org membership is not sufficient: a candidate actor is narrowed to
@@ -113,6 +116,10 @@ CANDIDATE_WRITABLE: dict[str, str] = {"resumes": "candidate_id"}
 # transcript is defensible in principle, but nothing in the product asks for it,
 # and the policy it would need -- "turns of interviews this candidate owns" --
 # is a per-row subquery against `interviews`. Add it when a feature wants it.
+#
+# The proctoring tables are staff-only for the same reason the plan is: a
+# candidate who can read the policy knows the blur limit, and one who can read
+# their own events knows exactly what was noticed and what was not.
 USER_ONLY_TABLES: list[str] = [
     "users",
     "interview_turns",
@@ -123,4 +130,7 @@ USER_ONLY_TABLES: list[str] = [
     "question_plans",
     "planned_questions",
     "rubric_criteria",
+    "proctoring_policies",
+    "proctoring_events",
+    "proctoring_verdicts",
 ]

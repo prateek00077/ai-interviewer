@@ -27,7 +27,7 @@ CONFIG_DIR = Path(__file__).resolve().parents[4] / "config"
 CLOUD_FILE = CONFIG_DIR / "services.cloud.yaml"
 LOCAL_FILE = CONFIG_DIR / "services.local.yaml"
 
-ServiceName = Literal["llm", "stt", "tts", "embeddings"]
+ServiceName = Literal["llm", "stt", "tts", "embeddings", "vision"]
 Transport = Literal["rest", "grpc"]
 
 _PROBE_TIMEOUT_SECS = 0.5

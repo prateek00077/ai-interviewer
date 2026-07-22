@@ -26,6 +26,14 @@ from app.models.interview import (
 )
 from app.models.job import EmploymentType, Job, JobDescription, JobStatus
 from app.models.org import Organization
+from app.models.proctoring import (
+    ProctorEventType,
+    ProctoringEvent,
+    ProctoringPolicy,
+    ProctoringVerdict,
+    ProctorSeverity,
+    ProctorVerdictKind,
+)
 from app.models.question_plan import (
     PlanGenerationStatus,
     PlannedQuestion,
@@ -52,6 +60,12 @@ __all__ = [
     "PlanGenerationStatus",
     "PlanStatus",
     "PlannedQuestion",
+    "ProctorEventType",
+    "ProctorSeverity",
+    "ProctorVerdictKind",
+    "ProctoringEvent",
+    "ProctoringPolicy",
+    "ProctoringVerdict",
     "QuestionPlan",
     "RubricCriterion",
     "Resume",

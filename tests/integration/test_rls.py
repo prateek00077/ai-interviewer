@@ -18,6 +18,13 @@ from app.db.rls import all_tables
 from app.models.interview import Interview, InterviewTurn, Speaker
 from app.models.job import Job, JobDescription
 from app.models.org import Organization
+from app.models.proctoring import (
+    ProctorEventType,
+    ProctoringEvent,
+    ProctoringPolicy,
+    ProctoringVerdict,
+    ProctorSeverity,
+)
 from app.models.question_plan import PlannedQuestion, QuestionPlan, RubricCriterion
 from app.models.resume import Resume, ResumeChunk
 from app.models.user import Candidate, User
@@ -480,3 +487,41 @@ async def test_the_system_actor_can_write_transcript_rows(tenant_session, org_a)
     async with tenant_session(org_a.org_id, "user", org_a.user_id) as s:
         turns = (await s.execute(select(InterviewTurn))).scalars().all()
         assert [t.content for t in turns] == ["written by the worker"]
+
+
+# --- Proctoring: staff-only ---------------------------------------------------
+
+
+async def test_a_candidate_cannot_read_proctoring_events(tenant_session, org_a):
+    """Knowing what was noticed is knowing what was not."""
+    async with tenant_session(org_a.org_id, "system", None) as s:
+        s.add(
+            ProctoringEvent(
+                org_id=org_a.org_id,
+                interview_id=org_a.interview_id,
+                event_type=ProctorEventType.TAB_BLUR,
+                severity=ProctorSeverity.INFO,
+            )
+        )
+
+    async with tenant_session(org_a.org_id, "candidate", org_a.candidate_id) as s:
+        assert (await s.execute(select(ProctoringEvent))).scalars().all() == []
+        assert (await s.execute(select(ProctoringVerdict))).scalars().all() == []
+        assert (await s.execute(select(ProctoringPolicy))).scalars().all() == []
+
+
+async def test_proctoring_events_are_isolated_by_org(tenant_session, org_a, org_b):
+    for org in (org_a, org_b):
+        async with tenant_session(org.org_id, "system", None) as s:
+            s.add(
+                ProctoringEvent(
+                    org_id=org.org_id,
+                    interview_id=org.interview_id,
+                    event_type=ProctorEventType.TAB_BLUR,
+                    severity=ProctorSeverity.INFO,
+                )
+            )
+
+    async with tenant_session(org_a.org_id, "user", org_a.user_id) as s:
+        rows = (await s.execute(select(ProctoringEvent))).scalars().all()
+        assert [r.org_id for r in rows] == [org_a.org_id]

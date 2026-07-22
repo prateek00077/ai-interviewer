@@ -49,3 +49,12 @@ embeddings:
   transport: rest
   base_url: https://integrate.api.nvidia.com/v1
   model: nvidia/nv-embedqa-e5-v5
+
+# Offline webcam-frame analysis for proctoring. REST, not gRPC: frames are
+# analysed after the interview in a Celery worker, never on the turn budget.
+# Verified working against a synthetic two-face frame in ~1.6s.
+vision:
+  provider: nvidia
+  transport: rest
+  base_url: https://integrate.api.nvidia.com/v1
+  model: nvidia/nemotron-nano-12b-v2-vl

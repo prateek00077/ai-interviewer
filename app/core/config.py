@@ -75,6 +75,17 @@ class Settings(BaseSettings):
     # How long an INVITED interview may sit before the reaper expires it.
     interview_expiry_hours: int = 72
 
+    # --- Proctoring (per-job policy overrides these) ---
+    proctor_blur_limit: int = 3
+    proctor_auto_terminate: bool = False
+    proctor_camera_enabled: bool = True
+    proctor_frame_interval_secs: int = 10
+    # A webcam still, not a document. Anything larger is a mistake or an attack.
+    max_proctor_frame_bytes: int = 2 * 1024 * 1024
+    # A candidate controls the proctoring socket completely, so the ingest rate
+    # is bounded regardless of what the browser claims to be reporting.
+    proctor_events_per_minute: int = 120
+
     # --- Object storage (MinIO locally, R2/S3 in production) ---
     # Empty means "AWS S3 proper"; boto3 then resolves the regional endpoint.
     s3_endpoint_url: str | None = "http://localhost:9000"

@@ -11,6 +11,7 @@ from app.api.v1 import (
     candidates,
     interviews,
     jobs,
+    proctoring,
     question_plans,
     users,
     webrtc,
@@ -24,3 +25,4 @@ api_router.include_router(jobs.router)
 api_router.include_router(interviews.router)
 api_router.include_router(question_plans.router)
 api_router.include_router(webrtc.router)
+api_router.include_router(proctoring.router)

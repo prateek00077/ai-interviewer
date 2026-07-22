@@ -39,6 +39,7 @@ celery_app = Celery(
     include=[
         "app.workers.tasks.resume_tasks",
         "app.workers.tasks.plan_tasks",
+        "app.workers.tasks.proctoring_tasks",
     ],
 )
 
