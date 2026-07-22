@@ -72,6 +72,7 @@ TENANT_TABLES: list[str] = [
     "users",
     "candidates",
     "interviews",
+    "interview_turns",
     "invites",
     "jobs",
     "job_descriptions",
@@ -107,8 +108,14 @@ CANDIDATE_WRITABLE: dict[str, str] = {"resumes": "candidate_id"}
 # The question plan tables are the answer key. A candidate who can read their
 # own plan knows the questions and the weights before the interview starts,
 # which defeats the entire product.
+#
+# interview_turns is staff-only for now. A candidate reading back their own
+# transcript is defensible in principle, but nothing in the product asks for it,
+# and the policy it would need -- "turns of interviews this candidate owns" --
+# is a per-row subquery against `interviews`. Add it when a feature wants it.
 USER_ONLY_TABLES: list[str] = [
     "users",
+    "interview_turns",
     "invites",
     "jobs",
     "job_descriptions",

@@ -16,7 +16,14 @@ model missing from migrations.
 """
 
 from app.db.base import Base
-from app.models.interview import Interview, InterviewStatus, Invite, InviteStatus
+from app.models.interview import (
+    Interview,
+    InterviewStatus,
+    InterviewTurn,
+    Invite,
+    InviteStatus,
+    Speaker,
+)
 from app.models.job import EmploymentType, Job, JobDescription, JobStatus
 from app.models.org import Organization
 from app.models.question_plan import (
@@ -35,6 +42,7 @@ __all__ = [
     "EmploymentType",
     "Interview",
     "InterviewStatus",
+    "InterviewTurn",
     "Invite",
     "InviteStatus",
     "Job",
@@ -47,6 +55,7 @@ __all__ = [
     "QuestionPlan",
     "RubricCriterion",
     "Resume",
+    "Speaker",
     "ResumeChunk",
     "ResumeStatus",
     "User",

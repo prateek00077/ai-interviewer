@@ -15,7 +15,7 @@ from sqlalchemy.exc import ProgrammingError
 
 from app.db.base import CANDIDATE_SCOPED, TENANT_TABLES
 from app.db.rls import all_tables
-from app.models.interview import Interview
+from app.models.interview import Interview, InterviewTurn, Speaker
 from app.models.job import Job, JobDescription
 from app.models.org import Organization
 from app.models.question_plan import PlannedQuestion, QuestionPlan, RubricCriterion
@@ -427,3 +427,56 @@ async def test_the_system_actor_can_write_a_plan(tenant_session, org_a):
         s.add(plan)
         await s.flush()
         assert plan.id is not None
+
+
+# --- Interview turns --------------------------------------------------------
+
+
+async def _seed_turn(tenant_session, org, content="something was said"):
+    async with tenant_session(org.org_id, "user", org.user_id) as s:
+        s.add(
+            InterviewTurn(
+                org_id=org.org_id,
+                interview_id=org.interview_id,
+                ordinal=0,
+                speaker=Speaker.CANDIDATE,
+                content=content,
+            )
+        )
+
+
+async def test_transcripts_are_isolated_by_org(tenant_session, org_a, org_b):
+    await _seed_turn(tenant_session, org_a, "alpha said this")
+    await _seed_turn(tenant_session, org_b, "bravo said this")
+
+    async with tenant_session(org_a.org_id, "user", org_a.user_id) as s:
+        turns = (await s.execute(select(InterviewTurn))).scalars().all()
+        assert [t.content for t in turns] == ["alpha said this"]
+
+
+async def test_a_candidate_cannot_read_transcript_rows(tenant_session, org_a):
+    """Staff-only for now. Nothing in the product asks for candidate access, and
+    the policy it would need is a per-row subquery against interviews."""
+    await _seed_turn(tenant_session, org_a)
+
+    async with tenant_session(org_a.org_id, "candidate", org_a.candidate_id) as s:
+        assert (await s.execute(select(InterviewTurn))).scalars().all() == []
+
+
+async def test_the_system_actor_can_write_transcript_rows(tenant_session, org_a):
+    """The bus handler runs as 'system'; without this every turn is dropped."""
+    async with tenant_session(org_a.org_id, "system", None) as s:
+        s.add(
+            InterviewTurn(
+                org_id=org_a.org_id,
+                interview_id=org_a.interview_id,
+                ordinal=0,
+                speaker=Speaker.INTERVIEWER,
+                content="written by the worker",
+            )
+        )
+        await s.flush()
+
+    async with tenant_session(org_a.org_id, "user", org_a.user_id) as s:
+        turns = (await s.execute(select(InterviewTurn))).scalars().all()
+        assert [t.content for t in turns] == ["written by the worker"]

@@ -102,7 +102,11 @@ def _body(code: str, message: str, request: Request) -> dict[str, Any]:
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _app_error(request: Request, exc: AppError) -> JSONResponse:
-        logger = log.bind(code=exc.code, status=exc.status_code, **exc.context)
+        # Reserved keys are applied LAST so a context entry named "code" or
+        # "status" cannot collide with them. Passing both positionally would
+        # raise TypeError inside the handler and turn a clean 4xx into a 500 --
+        # which is exactly what a ConflictError carrying status=... once did.
+        logger = log.bind(**{**exc.context, "code": exc.code, "status": exc.status_code})
         if exc.status_code >= 500:
             logger.error("app_error", exc_info=exc)
         else:

@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     # --- Redis ---
     redis_url: str = "redis://localhost:6379/0"
 
+    # --- Interview ---
+    # A hard cap on one session. Protects the turn budget, the API bill, and a
+    # candidate who walked away from their laptop with the mic open.
+    max_interview_minutes: int = 45
+    # How long an INVITED interview may sit before the reaper expires it.
+    interview_expiry_hours: int = 72
+
     # --- Object storage (MinIO locally, R2/S3 in production) ---
     # Empty means "AWS S3 proper"; boto3 then resolves the regional endpoint.
     s3_endpoint_url: str | None = "http://localhost:9000"

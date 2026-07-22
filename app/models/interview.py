@@ -1,9 +1,4 @@
-"""Interview, InterviewTurn, Invite.
-
-NOTE: ``InterviewTurn`` is intentionally absent in this slice. The auth module
-only needs enough of ``Interview`` to anchor an invite and mint an interview
-token; the turn transcript model lands with the voice/interview slice.
-"""
+"""Interview, InterviewTurn, Invite."""
 
 import enum
 import uuid
@@ -11,12 +6,14 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
     Index,
     Integer,
+    Text,
     UniqueConstraint,
     text,
 )
@@ -83,9 +80,80 @@ class Interview(Base, TenantMixin, TimestampMixin):
     invites: Mapped[list["Invite"]] = relationship(
         back_populates="interview", cascade="all, delete-orphan"
     )
+    turns: Mapped[list["InterviewTurn"]] = relationship(
+        back_populates="interview",
+        cascade="all, delete-orphan",
+        order_by="InterviewTurn.ordinal",
+    )
 
     def __repr__(self) -> str:
         return f"<Interview {self.id} {self.status}>"
+
+
+class Speaker(enum.StrEnum):
+    CANDIDATE = "CANDIDATE"
+    INTERVIEWER = "INTERVIEWER"
+
+
+speaker_enum = Enum(
+    Speaker,
+    name="speaker",
+    values_callable=lambda e: [m.value for m in e],
+    create_type=False,
+)
+
+
+class InterviewTurn(Base, TenantMixin, TimestampMixin):
+    """One utterance in the conversation.
+
+    Offsets are milliseconds from session start, not wall-clock timestamps. They
+    are what ties a transcript line to a position in the recording, and a
+    wall-clock time would drift against the audio the moment anything buffered
+    or the process paused.
+
+    ``content`` is the live ASR result and is deliberately mutable: the offline
+    full-quality pass corrects the text in place while keeping these timings,
+    which are the more trustworthy half of the pair.
+    """
+
+    __tablename__ = "interview_turns"
+    __table_args__ = (
+        # Ordinal is assigned by the voice session, and the constraint is what
+        # makes a duplicated event a database error rather than a doubled line
+        # in the transcript.
+        UniqueConstraint("interview_id", "ordinal", name="uq_interview_turns_interview_id_ordinal"),
+        CheckConstraint("ended_offset_ms >= started_offset_ms", name="offsets_ordered"),
+        Index("ix_interview_turns_interview_id_ordinal", "interview_id", "ordinal"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    interview_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("interviews.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    speaker: Mapped[Speaker] = mapped_column(speaker_enum, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    started_offset_ms: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    ended_offset_ms: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    # Which planned question this answers, by ordinal rather than by id: the
+    # plan is frozen at session start, so its ordinals are stable, and a foreign
+    # key would make a deleted plan cascade away the transcript.
+    question_ordinal: Mapped[int | None] = mapped_column(Integer)
+    # True once the offline pass has replaced the live ASR text.
+    is_final: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+
+    interview: Mapped["Interview"] = relationship(back_populates="turns")
+
+    def __repr__(self) -> str:
+        return f"<InterviewTurn {self.interview_id}#{self.ordinal} {self.speaker}>"
 
 
 class Invite(Base, TenantMixin, TimestampMixin):

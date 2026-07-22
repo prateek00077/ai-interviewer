@@ -16,10 +16,13 @@ from redis.asyncio import Redis
 
 from app.api.v1.router import api_router
 from app.core.config import settings
+from app.core.events import bus
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import RequestContextMiddleware, configure_logging
 from app.db.session import dispose_engine
 from app.modules.auth.tokens import RefreshTokenStore
+from app.modules.interview import service as interview_service
+from app.modules.interview import transcript
 
 log = structlog.get_logger(__name__)
 
@@ -27,6 +30,13 @@ log = structlog.get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
+
+    # Wire the event bus once, at startup. Subscribers are module-level
+    # functions, so registering at import time would attach a second handler
+    # every time a test re-imported the app.
+    interview_service.register()
+    transcript.register()
+
     redis = Redis.from_url(settings.redis_url)
     app.state.redis = redis
     app.state.token_store = RefreshTokenStore(redis)
@@ -34,6 +44,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # Let in-flight handlers finish before the loop closes, so the last turn
+        # of a live interview is not lost on shutdown.
+        await bus.drain()
+        bus.clear()
         await redis.aclose()
         await dispose_engine()
         log.info("shutdown")

@@ -311,3 +311,19 @@ def test_verify_and_upgrade_reports_no_match_without_offering_a_hash():
 @pytest.mark.parametrize("stored", ["", "not-a-hash", "$argon2id$broken"])
 def test_verify_and_upgrade_survives_a_corrupt_stored_hash(stored: str):
     assert verify_and_upgrade("anything", stored) == (False, None)
+
+
+# --- Error handling ---------------------------------------------------------
+
+
+def test_error_context_cannot_collide_with_the_reserved_log_keys():
+    """An AppError carrying context named "code" or "status" once crashed the
+    exception handler with a duplicate-kwarg TypeError, turning a clean 409 into
+    a 500. The reserved keys are applied last so they always win."""
+    from app.core.exceptions import ConflictError
+
+    error = ConflictError("nope", status="TERMINATED", code="something")
+    merged = {**error.context, "code": error.code, "status": error.status_code}
+
+    assert merged["code"] == "conflict"
+    assert merged["status"] == 409

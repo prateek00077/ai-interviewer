@@ -31,6 +31,7 @@ from app.core.security import (
 from app.db.session import tenant_session
 from app.models.interview import Interview, InterviewStatus, Invite, InviteStatus
 from app.models.user import Candidate
+from app.modules.interview import state_machine
 
 log = structlog.get_logger(__name__)
 
@@ -175,9 +176,22 @@ async def redeem_invite(raw_token: str) -> RedeemedInvite:
             )
             raise InviteUnusableError()
 
+        # NOT marked IN_PROGRESS here. Redeeming a link is intent to join, not
+        # joining: a candidate can redeem and never connect, and a multi-use
+        # invite is redeemed again on every reconnect. The interview goes live
+        # when the voice session actually starts, which is also what freezes the
+        # question plan. Flipping the status here would make "redeemed but never
+        # attended" indistinguishable from an interview that really ran.
         interview = await session.get(Interview, row.interview_id)
-        if interview is not None and interview.status is InterviewStatus.INVITED:
-            interview.status = InterviewStatus.IN_PROGRESS
+        if interview is not None and state_machine.is_terminal(interview.status):
+            # The link outlived the interview -- terminated, expired, already
+            # completed. Same opaque 410 as every other unusable-invite case.
+            log.info(
+                "auth.invite_rejected_terminal",
+                invite_id=str(claims.invite_id),
+                status=interview.status.value,
+            )
+            raise InviteUnusableError()
 
     token, expires_in = create_interview_token(
         candidate_id=row.candidate_id,
