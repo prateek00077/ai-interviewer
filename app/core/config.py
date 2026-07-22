@@ -58,6 +58,25 @@ class Settings(BaseSettings):
     # --- Redis ---
     redis_url: str = "redis://localhost:6379/0"
 
+    # --- Object storage (MinIO locally, R2/S3 in production) ---
+    # Empty means "AWS S3 proper"; boto3 then resolves the regional endpoint.
+    s3_endpoint_url: str | None = "http://localhost:9000"
+    s3_region: str = "us-east-1"
+    s3_access_key_id: SecretStr = SecretStr("minioadmin")
+    s3_secret_access_key: SecretStr = SecretStr("minioadmin")
+    s3_bucket_resumes: str = "resumes"
+    s3_bucket_recordings: str = "recordings"
+    s3_bucket_proctoring: str = "proctoring"
+    s3_bucket_reports: str = "reports"
+    # Short: a presigned PUT is handed to a browser that is about to use it.
+    s3_presign_ttl_secs: int = 900
+    # Resumes are documents, not media. Anything larger is a mistake or an attack.
+    max_resume_bytes: int = 10 * 1024 * 1024
+
+    # --- Celery ---
+    celery_broker_url: str = "redis://localhost:6379/1"
+    celery_result_backend: str = "redis://localhost:6379/2"
+
     # --- NVIDIA NIM ---
     # One key covers LLM (REST), ASR (gRPC) and TTS (gRPC).
     nvidia_api_key: SecretStr = SecretStr("")

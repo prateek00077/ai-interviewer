@@ -75,11 +75,19 @@ TENANT_TABLES: list[str] = [
     "invites",
     "jobs",
     "job_descriptions",
+    "resumes",
+    "resume_chunks",
 ]
 
 # Tables where org membership is not sufficient: a candidate actor is narrowed to
 # rows it owns. Maps table -> the column holding the owning candidate id.
 CANDIDATE_SCOPED: dict[str, str] = {"interviews": "candidate_id", "candidates": "id"}
+
+# Candidate-scoped AND candidate-writable. Separate from CANDIDATE_SCOPED because
+# read-own and write-own are different grants: a candidate reads their interview
+# but must never create one. Resumes are the one thing a candidate legitimately
+# writes, since they are the only person who has the file.
+CANDIDATE_WRITABLE: dict[str, str] = {"resumes": "candidate_id"}
 
 # Tables a candidate actor must never read at all.
 #
@@ -87,4 +95,15 @@ CANDIDATE_SCOPED: dict[str, str] = {"interviews": "candidate_id", "candidates": 
 # roles, headcount or salary bands. The interview pipeline does read the job
 # description, but it does so server-side under the recruiter/system context that
 # assembles the prompt -- never through the candidate's own token.
-USER_ONLY_TABLES: list[str] = ["users", "invites", "jobs", "job_descriptions"]
+#
+# resume_chunks is here too: the chunk text and its embedding are derived data
+# the recruiter's pipeline reads. A candidate has no reason to page through the
+# vector representation of their own CV, and not exposing it keeps the retrieval
+# index off the candidate-facing attack surface entirely.
+USER_ONLY_TABLES: list[str] = [
+    "users",
+    "invites",
+    "jobs",
+    "job_descriptions",
+    "resume_chunks",
+]

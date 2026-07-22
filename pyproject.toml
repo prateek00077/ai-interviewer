@@ -73,6 +73,9 @@ dev = [
     "factory-boy>=3.3",
     "ruff>=0.8",
     "mypy>=1.13",
+    # Generates the resume fixtures (tests/fixtures/make_fixtures.py) and builds
+    # the text-free PDF the "scanned CV" test needs.
+    "reportlab>=4.2",
 ]
 
 [build-system]
@@ -94,6 +97,7 @@ pythonpath = ["."]
 markers = [
     "integration: requires a live Postgres with the RLS migration applied",
     "redis: requires a live Redis",
+    "nim: spends real NVIDIA API calls; skip with -m 'not nim'",
 ]
 
 [tool.ruff]
@@ -102,3 +106,10 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+# boto3/botocore ship no type information. Silencing the import keeps the rest of
+# app/integrations/storage.py type-checked rather than untyped wholesale.
+[[tool.mypy.overrides]]
+module = ["boto3.*", "botocore.*", "celery.*"]
+ignore_missing_imports = true

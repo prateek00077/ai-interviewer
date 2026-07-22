@@ -49,6 +49,13 @@ ALTER ROLE app_auth  NOLOGIN NOSUPERUSER NOBYPASSRLS;
 -- app_owner must be a member of app_auth to hand the function over to it.
 GRANT app_auth TO app_owner;
 
+-- pgvector is NOT a "trusted" extension, so unlike citext and pgcrypto the
+-- database owner cannot create it -- only a superuser can. That is why it lives
+-- here rather than in the migration that creates the vector column: Alembic
+-- connects as app_owner and would fail with "Must be superuser to create this
+-- extension".
+CREATE EXTENSION IF NOT EXISTS vector;
+
 ALTER DATABASE ai_interviewer OWNER TO app_owner;
 ALTER SCHEMA public OWNER TO app_owner;
 

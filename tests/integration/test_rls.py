@@ -17,6 +17,7 @@ from app.db.rls import all_tables
 from app.models.interview import Interview
 from app.models.job import Job, JobDescription
 from app.models.org import Organization
+from app.models.resume import Resume, ResumeChunk
 from app.models.user import Candidate, User
 
 pytestmark = pytest.mark.integration
@@ -244,6 +245,109 @@ async def test_cannot_insert_a_job_into_another_org(tenant_session, org_a, org_b
         async with tenant_session(org_a.org_id, "user", org_a.user_id) as s:
             s.add(Job(org_id=org_b.org_id, title="Smuggled Role"))
             await s.flush()
+
+
+# --- Resumes: the one candidate-writable table ------------------------------
+
+
+def _resume(org_id, candidate_id, key="k"):
+    return Resume(
+        org_id=org_id,
+        candidate_id=candidate_id,
+        s3_key=f"{org_id}/{candidate_id}/{key}.pdf",
+        filename="cv.pdf",
+        content_type="application/pdf",
+    )
+
+
+async def test_a_candidate_may_write_their_own_resume(tenant_session, org_a):
+    """The candidate holds the file, so they must be able to record the upload."""
+    async with tenant_session(org_a.org_id, "candidate", org_a.candidate_id) as s:
+        s.add(_resume(org_a.org_id, org_a.candidate_id))
+        await s.flush()
+
+    async with tenant_session(org_a.org_id, "candidate", org_a.candidate_id) as s:
+        assert len((await s.execute(select(Resume))).scalars().all()) == 1
+
+
+async def test_a_candidate_cannot_write_a_resume_for_someone_else(tenant_session, org_a):
+    """WITH CHECK, not just USING: the insert names another owner."""
+    other = uuid.uuid4()
+    async with tenant_session(org_a.org_id, "user", org_a.user_id) as s:
+        s.add(Candidate(id=other, org_id=org_a.org_id, email="other@alpha.test"))
+
+    with pytest.raises(ProgrammingError, match="row-level security"):
+        async with tenant_session(org_a.org_id, "candidate", org_a.candidate_id) as s:
+            s.add(_resume(org_a.org_id, other))
+            await s.flush()
+
+
+async def test_a_candidate_cannot_reassign_their_resume_to_another_candidate(
+    tenant_session, org_a
+):
+    """The reason WITH CHECK repeats the ownership predicate rather than
+    deferring to USING: USING governs the rows an UPDATE may find, WITH CHECK
+    the rows it may leave behind."""
+    other = uuid.uuid4()
+    async with tenant_session(org_a.org_id, "user", org_a.user_id) as s:
+        s.add(Candidate(id=other, org_id=org_a.org_id, email="victim@alpha.test"))
+        await s.flush()
+        s.add(_resume(org_a.org_id, org_a.candidate_id))
+
+    with pytest.raises(ProgrammingError, match="row-level security"):
+        async with tenant_session(org_a.org_id, "candidate", org_a.candidate_id) as s:
+            await s.execute(update(Resume).values(candidate_id=other))
+
+
+async def test_a_candidate_cannot_see_another_candidates_resume(tenant_session, org_a):
+    other = uuid.uuid4()
+    async with tenant_session(org_a.org_id, "user", org_a.user_id) as s:
+        s.add(Candidate(id=other, org_id=org_a.org_id, email="other2@alpha.test"))
+        await s.flush()
+        s.add(_resume(org_a.org_id, other))
+
+    async with tenant_session(org_a.org_id, "candidate", org_a.candidate_id) as s:
+        assert (await s.execute(select(Resume))).scalars().all() == []
+
+
+async def test_a_candidate_cannot_read_resume_chunks(tenant_session, org_a):
+    """The retrieval index is derived data the recruiter's pipeline reads. A
+    candidate paging through the vector form of their own CV serves nobody."""
+    async with tenant_session(org_a.org_id, "user", org_a.user_id) as s:
+        resume = _resume(org_a.org_id, org_a.candidate_id)
+        s.add(resume)
+        await s.flush()
+        s.add(
+            ResumeChunk(
+                org_id=org_a.org_id, resume_id=resume.id, ordinal=0, content="[skills] Python"
+            )
+        )
+
+    async with tenant_session(org_a.org_id, "candidate", org_a.candidate_id) as s:
+        assert (await s.execute(select(ResumeChunk))).scalars().all() == []
+
+
+# --- The system actor -------------------------------------------------------
+
+
+async def test_the_system_actor_reads_staff_tables_within_its_org(
+    tenant_session, org_a, org_b
+):
+    """Celery workers run as 'system'. Without this they read nothing at all and
+    every background task is a silent no-op."""
+    async with tenant_session(org_a.org_id, "system", None) as s:
+        assert len((await s.execute(select(User))).scalars().all()) == 1
+        assert (await s.execute(text("SELECT count(*) FROM invites"))).scalar() is not None
+
+        # Still exactly one org. The widening is on the actor axis only.
+        assert [c.org_id for c in (await s.execute(select(Candidate))).scalars()] == [
+            org_a.org_id
+        ]
+
+
+async def test_the_system_actor_cannot_cross_orgs(tenant_session, org_a, org_b):
+    async with tenant_session(org_a.org_id, "system", None) as s:
+        assert await s.get(Candidate, org_b.candidate_id) is None
 
 
 async def test_candidate_actor_cannot_write(tenant_session, org_a):

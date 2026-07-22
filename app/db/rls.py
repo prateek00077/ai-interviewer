@@ -13,7 +13,12 @@ Two Postgres details this module encodes:
   NULL, and ``''::uuid`` throws.
 """
 
-from app.db.base import CANDIDATE_SCOPED, TENANT_TABLES, USER_ONLY_TABLES
+from app.db.base import (
+    CANDIDATE_SCOPED,
+    CANDIDATE_WRITABLE,
+    TENANT_TABLES,
+    USER_ONLY_TABLES,
+)
 
 APP_SCHEMA = "app"
 APP_ROLE = "app_user"
@@ -116,6 +121,18 @@ DROP_AUTH_LOOKUP = [
 
 # --- Policy generators ------------------------------------------------------
 
+# Actor kinds that see a whole org's rows: an interactive recruiter, and the
+# background workers that finish an interview after everyone has gone home.
+#
+# WHY 'system' IS HERE: post-interview work -- transcription, scoring, report
+# rendering, invite expiry -- runs in Celery with no logged-in user to attribute
+# it to. The alternative is to have workers claim actor_kind='user', which makes
+# app.actor_kind() lie about who touched a row and destroys the audit value of
+# the GUC. Widening the predicate is the honest version; the org boundary is
+# unchanged, because a system session still gets exactly one org_id.
+STAFF_KINDS = ("user", "system")
+_IS_STAFF = f"{APP_SCHEMA}.actor_kind() = ANY (ARRAY['user','system'])"
+
 
 def enable_rls(table: str) -> list[str]:
     """Enable and FORCE RLS.
@@ -170,12 +187,12 @@ CREATE POLICY {_policy_name(table)} ON {table}
 
 
 def user_only_policy(table: str) -> str:
-    """Org isolation plus: candidate actors read nothing at all."""
+    """Staff-only: candidate actors read nothing at all."""
     return f"""
 CREATE POLICY {_policy_name(table)} ON {table}
   FOR ALL TO {APP_ROLE}
-  USING (org_id = {APP_SCHEMA}.current_org() AND {APP_SCHEMA}.actor_kind() = 'user')
-  WITH CHECK (org_id = {APP_SCHEMA}.current_org() AND {APP_SCHEMA}.actor_kind() = 'user')
+  USING (org_id = {APP_SCHEMA}.current_org() AND {_IS_STAFF})
+  WITH CHECK (org_id = {APP_SCHEMA}.current_org() AND {_IS_STAFF})
 """
 
 
@@ -192,46 +209,72 @@ CREATE POLICY {_policy_name(table)} ON {table}
   USING (
     org_id = {APP_SCHEMA}.current_org()
     AND (
-      {APP_SCHEMA}.actor_kind() = 'user'
+      {_IS_STAFF}
       OR ({APP_SCHEMA}.actor_kind() = 'candidate' AND {owner_col} = {APP_SCHEMA}.actor_id())
     )
   )
   WITH CHECK (
-    org_id = {APP_SCHEMA}.current_org() AND {APP_SCHEMA}.actor_kind() = 'user'
+    org_id = {APP_SCHEMA}.current_org() AND {_IS_STAFF}
+  )
+"""
+
+
+def candidate_writable_policy(table: str, owner_col: str) -> str:
+    """Org isolation, plus a candidate may read AND write rows it owns.
+
+    The one table this applies to is ``resumes``: the candidate is the only party
+    holding the file, so they must be able to record the upload themselves.
+
+    WITH CHECK repeats the ownership predicate rather than deferring to USING.
+    Postgres applies USING to the rows an UPDATE may *find* and WITH CHECK to the
+    rows it may *leave behind*; without the candidate branch in WITH CHECK, a
+    candidate could take a row they own and rewrite its ``candidate_id`` to
+    someone else's, attaching their file to another person's record.
+    """
+    return f"""
+CREATE POLICY {_policy_name(table)} ON {table}
+  FOR ALL TO {APP_ROLE}
+  USING (
+    org_id = {APP_SCHEMA}.current_org()
+    AND (
+      {_IS_STAFF}
+      OR ({APP_SCHEMA}.actor_kind() = 'candidate' AND {owner_col} = {APP_SCHEMA}.actor_id())
+    )
+  )
+  WITH CHECK (
+    org_id = {APP_SCHEMA}.current_org()
+    AND (
+      {_IS_STAFF}
+      OR ({APP_SCHEMA}.actor_kind() = 'candidate' AND {owner_col} = {APP_SCHEMA}.actor_id())
+    )
   )
 """
 
 
 def policy_for(table: str) -> str:
-    """Dispatch a table to its policy shape. One place, so nothing is ad hoc."""
+    """Dispatch a table to its policy shape. One place, so nothing is ad hoc.
+
+    Order matters: the writable registry is checked before the read-only scoped
+    one, so a table listed in both would get the wider grant rather than silently
+    the narrower.
+    """
     if table == "organizations":
         return org_root_policy()
     if table in USER_ONLY_TABLES:
         return user_only_policy(table)
+    if table in CANDIDATE_WRITABLE:
+        return candidate_writable_policy(table, CANDIDATE_WRITABLE[table])
     if table in CANDIDATE_SCOPED:
         return candidate_scoped_policy(table, CANDIDATE_SCOPED[table])
     return tenant_policy(table)
 
 
 def all_tables() -> list[str]:
+    """Every RLS-protected table as of the CURRENT code.
+
+    This is the live registry, so it is the right answer for tests asserting
+    coverage and the wrong answer inside a migration -- a migration must name the
+    tables that existed at its own revision, or a from-scratch upgrade tries to
+    protect tables a later revision has not created yet.
+    """
     return ["organizations", *TENANT_TABLES]
-
-
-def upgrade_statements() -> list[str]:
-    """Every statement the RLS migration runs, in order."""
-    stmts = [CREATE_APP_SCHEMA, *CREATE_GUC_FUNCTIONS, *CREATE_AUTH_LOOKUP]
-    for table in all_tables():
-        stmts.extend(enable_rls(table))
-        stmts.append(drop_policy(table))
-        stmts.append(policy_for(table))
-    return stmts
-
-
-def downgrade_statements() -> list[str]:
-    stmts: list[str] = []
-    for table in all_tables():
-        stmts.append(drop_policy(table))
-        stmts.extend(disable_rls(table))
-    stmts.extend(DROP_AUTH_LOOKUP)
-    stmts.extend(DROP_GUC_FUNCTIONS)
-    return stmts
