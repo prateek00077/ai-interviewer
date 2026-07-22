@@ -19,6 +19,13 @@ from app.db.base import Base
 from app.models.interview import Interview, InterviewStatus, Invite, InviteStatus
 from app.models.job import EmploymentType, Job, JobDescription, JobStatus
 from app.models.org import Organization
+from app.models.question_plan import (
+    PlanGenerationStatus,
+    PlannedQuestion,
+    PlanStatus,
+    QuestionPlan,
+    RubricCriterion,
+)
 from app.models.resume import Resume, ResumeChunk, ResumeStatus
 from app.models.user import Candidate, User, UserRole
 
@@ -34,6 +41,11 @@ __all__ = [
     "JobDescription",
     "JobStatus",
     "Organization",
+    "PlanGenerationStatus",
+    "PlanStatus",
+    "PlannedQuestion",
+    "QuestionPlan",
+    "RubricCriterion",
     "Resume",
     "ResumeChunk",
     "ResumeStatus",

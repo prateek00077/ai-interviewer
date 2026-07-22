@@ -38,6 +38,7 @@ celery_app = Celery(
     backend=settings.celery_result_backend,
     include=[
         "app.workers.tasks.resume_tasks",
+        "app.workers.tasks.plan_tasks",
     ],
 )
 

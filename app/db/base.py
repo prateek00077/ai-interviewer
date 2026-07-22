@@ -77,6 +77,9 @@ TENANT_TABLES: list[str] = [
     "job_descriptions",
     "resumes",
     "resume_chunks",
+    "question_plans",
+    "planned_questions",
+    "rubric_criteria",
 ]
 
 # Tables where org membership is not sufficient: a candidate actor is narrowed to
@@ -100,10 +103,17 @@ CANDIDATE_WRITABLE: dict[str, str] = {"resumes": "candidate_id"}
 # the recruiter's pipeline reads. A candidate has no reason to page through the
 # vector representation of their own CV, and not exposing it keeps the retrieval
 # index off the candidate-facing attack surface entirely.
+#
+# The question plan tables are the answer key. A candidate who can read their
+# own plan knows the questions and the weights before the interview starts,
+# which defeats the entire product.
 USER_ONLY_TABLES: list[str] = [
     "users",
     "invites",
     "jobs",
     "job_descriptions",
     "resume_chunks",
+    "question_plans",
+    "planned_questions",
+    "rubric_criteria",
 ]

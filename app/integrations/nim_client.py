@@ -15,11 +15,14 @@ just burns quota.
 from __future__ import annotations
 
 import asyncio
+import json
 import random
-from typing import Any
+import re
+from typing import Any, TypeVar
 
 import httpx
 import structlog
+from pydantic import BaseModel, ValidationError
 
 from app.core.config import settings
 from app.core.exceptions import AppError
@@ -169,3 +172,91 @@ async def complete(
         payload = await _post(client, f"{spec.base_url}/chat/completions", body, what="chat")
 
     return payload["choices"][0]["message"]["content"]
+
+
+# --- Structured output ------------------------------------------------------
+
+# Models wrap JSON in prose or a fenced block often enough that stripping it is
+# not defensive programming, it is the normal path.
+_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+
+
+def extract_json(raw: str) -> Any:
+    """Pull a JSON value out of a model response.
+
+    Tries, in order: the whole string, a fenced block, and the outermost
+    brace-or-bracket span. Raises ValueError if none of those parse -- the caller
+    turns that into a repair round trip.
+    """
+    candidates = [raw.strip()]
+
+    fenced = _FENCE_RE.search(raw)
+    if fenced:
+        candidates.append(fenced.group(1))
+
+    # Outermost { } or [ ], for "Here is the plan: {...}. Let me know!"
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start, end = raw.find(opener), raw.rfind(closer)
+        if 0 <= start < end:
+            candidates.append(raw[start : end + 1])
+
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+    raise ValueError(f"no JSON value found in model output: {raw[:200]!r}")
+
+
+ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+async def complete_structured(
+    messages: list[dict[str, str]],
+    schema: type[ModelT],
+    *,
+    max_tokens: int = 4096,
+    temperature: float = 0.2,
+    spec: ServiceSpec | None = None,
+) -> ModelT:
+    """A completion validated against a Pydantic model, with one repair attempt.
+
+    The repair turn is what makes this usable in a pipeline. A model that emits
+    a weight of 1.5, or forgets a required field, will usually fix it when shown
+    the validation error -- and a second call is far cheaper than failing the
+    job and retrying the whole generation from scratch.
+
+    Exactly one repair, deliberately. A model that cannot satisfy the schema on
+    the second try is not going to on the fifth, and an unbounded loop against a
+    metered API is how a single bad job burns a quota.
+    """
+    conversation = list(messages)
+
+    for attempt in range(2):
+        raw = await complete(
+            conversation, max_tokens=max_tokens, temperature=temperature, spec=spec
+        )
+        try:
+            return schema.model_validate(extract_json(raw))
+        except (ValueError, ValidationError) as exc:
+            if attempt == 1:
+                log.error("structured_output_failed", schema=schema.__name__, error=str(exc)[:500])
+                raise NimError(
+                    f"The model did not return valid {schema.__name__} output."
+                ) from exc
+
+            log.warning("structured_output_repair", schema=schema.__name__, error=str(exc)[:300])
+            conversation = [
+                *conversation,
+                {"role": "assistant", "content": raw},
+                {
+                    "role": "user",
+                    "content": (
+                        "That response was rejected by the schema validator:\n"
+                        f"{str(exc)[:1500]}\n\n"
+                        "Return ONLY the corrected JSON object. No prose, no code fence."
+                    ),
+                },
+            ]
+
+    raise AssertionError("unreachable")

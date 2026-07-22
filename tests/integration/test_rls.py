@@ -7,6 +7,7 @@ by asserting the environment is capable of failing at all.
 """
 
 import uuid
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import delete, select, text, update
@@ -17,6 +18,7 @@ from app.db.rls import all_tables
 from app.models.interview import Interview
 from app.models.job import Job, JobDescription
 from app.models.org import Organization
+from app.models.question_plan import PlannedQuestion, QuestionPlan, RubricCriterion
 from app.models.resume import Resume, ResumeChunk
 from app.models.user import Candidate, User
 
@@ -371,3 +373,57 @@ def test_candidate_scoped_registry_matches_reality():
         assert column in models[table].__table__.columns, (
             f"CANDIDATE_SCOPED names {table}.{column}, which does not exist"
         )
+
+
+# --- Question plans: the answer key -----------------------------------------
+
+
+async def _seed_plan(tenant_session, org):
+    """A plan with one question and one criterion, written as a staff actor."""
+    async with tenant_session(org.org_id, "user", org.user_id) as s:
+        plan = QuestionPlan(org_id=org.org_id, interview_id=org.interview_id)
+        s.add(plan)
+        await s.flush()
+        s.add(
+            PlannedQuestion(
+                org_id=org.org_id, plan_id=plan.id, ordinal=0, body="Explain the migration."
+            )
+        )
+        s.add(
+            RubricCriterion(
+                org_id=org.org_id,
+                plan_id=plan.id,
+                ordinal=0,
+                name="depth",
+                weight=Decimal("1.0"),
+            )
+        )
+        return plan.id
+
+
+async def test_a_candidate_cannot_read_their_own_question_plan(tenant_session, org_a):
+    """Knowing the questions and the weights beforehand defeats the product."""
+    await _seed_plan(tenant_session, org_a)
+
+    async with tenant_session(org_a.org_id, "candidate", org_a.candidate_id) as s:
+        assert (await s.execute(select(QuestionPlan))).scalars().all() == []
+        assert (await s.execute(select(PlannedQuestion))).scalars().all() == []
+        assert (await s.execute(select(RubricCriterion))).scalars().all() == []
+
+
+async def test_question_plans_are_isolated_by_org(tenant_session, org_a, org_b):
+    await _seed_plan(tenant_session, org_a)
+    await _seed_plan(tenant_session, org_b)
+
+    async with tenant_session(org_a.org_id, "user", org_a.user_id) as s:
+        plans = (await s.execute(select(QuestionPlan))).scalars().all()
+        assert [p.org_id for p in plans] == [org_a.org_id]
+
+
+async def test_the_system_actor_can_write_a_plan(tenant_session, org_a):
+    """The generation worker runs as 'system' and must be able to persist."""
+    async with tenant_session(org_a.org_id, "system", None) as s:
+        plan = QuestionPlan(org_id=org_a.org_id, interview_id=org_a.interview_id)
+        s.add(plan)
+        await s.flush()
+        assert plan.id is not None
