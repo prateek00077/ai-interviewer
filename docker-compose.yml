@@ -1,0 +1,51 @@
+# postgres+pgvector, redis, minio, api, worker
+#
+# Only postgres and redis are defined in this slice -- they are what the auth
+# module needs. minio, api and worker land with the services that use them.
+#
+# After `docker compose up -d`, bootstrap the roles once (CREATE ROLE is not a
+# privilege Alembic should hold) and then migrate:
+#
+#   docker compose exec -T postgres psql -U postgres -d ai_interviewer \
+#     -v owner_pw="'owner_pw'" -v app_pw="'app_pw'" < scripts/bootstrap_db.sql
+#   alembic upgrade head
+
+services:
+  postgres:
+    # pgvector is not needed by auth, but using the same image now avoids a
+    # swap when the resume-embedding slice lands.
+    image: pgvector/pgvector:pg16
+    container_name: aii-pg
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ai_interviewer
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai_interviewer"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: aii-redis
+    # Refresh-token records are security state, not a cache: losing them on
+    # restart would make every replay read as UNKNOWN instead of REUSE.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:

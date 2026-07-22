@@ -1,0 +1,31 @@
+# Self-hosted NIM overlay.
+#
+# Entries here SHADOW their cloud counterparts when the endpoint is reachable.
+# catalog.py performs the merge; no application code branches on provider.
+# Leave a section commented out to keep using the hosted version for it.
+#
+# Bring these up with: docker compose -f docker-compose.local-nim.yml up
+
+# llm:
+#   provider: nvidia
+#   transport: rest
+#   base_url: http://localhost:8000/v1
+#   model: nvidia/nemotron-3-nano-30b-a3b
+
+# stt:
+#   provider: nvidia
+#   transport: grpc
+#   server: localhost:50052
+#   use_ssl: false
+#   model: nemotron-asr-streaming
+#   function_id: ""          # not needed when self-hosted
+#   language: en-US
+
+# tts:
+#   provider: nvidia
+#   transport: grpc
+#   server: localhost:50051
+#   use_ssl: false
+#   model: magpie-tts-multilingual
+#   function_id: ""
+#   voice: Magpie-Multilingual.EN-US.Aria

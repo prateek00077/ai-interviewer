@@ -1,0 +1,99 @@
+[project]
+name = "ai-interviewer"
+version = "0.1.0"
+description = "AI interviewer platform: candidate speaks, AI interviews, recruiter gets a scored report."
+requires-python = ">=3.11"
+
+dependencies = [
+    # --- API ---
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    # [email] pulls email-validator, which EmailStr needs at schema-build time.
+    "pydantic[email]>=2.9",
+    "pydantic-settings>=2.6",
+    "python-multipart>=0.0.12",
+
+    # --- Data ---
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "pgvector>=0.3.6",
+    "redis>=5.2",
+
+    # --- Jobs ---
+    "celery[redis]>=5.4",
+    "flower>=2.0",
+
+    # --- Auth ---
+    "pyjwt>=2.10",
+    # pwdlib, not passlib: passlib is unmaintained and raises
+    # `AttributeError: module 'bcrypt' has no attribute '__about__'` against
+    # bcrypt>=4.1. Argon2id also avoids bcrypt's silent 72-byte truncation.
+    "pwdlib[argon2]>=0.2.1",
+
+    # --- Storage & integrations ---
+    "boto3>=1.35",
+    "httpx>=0.28",
+    "pyyaml>=6.0",
+
+    # --- Resume parsing ---
+    "pypdf>=5.1",
+    "python-docx>=1.1",
+
+    # --- Audio analysis (confidence signals) ---
+    "librosa>=0.10",
+    "numpy>=1.26",
+
+    # --- Reports ---
+    "weasyprint>=63.0",
+    "jinja2>=3.1",
+
+    # --- Observability ---
+    "structlog>=24.4",
+]
+
+[project.optional-dependencies]
+# Kept out of the core deps so auth work and CI install in seconds rather than
+# pulling the full voice stack. Install with: pip install -e '.[voice]'
+# NOTE: the `riva` and `nim` extras were REMOVED from pipecat and renamed to `nvidia`.
+# `pipecat-ai[riva]` fails on current versions; most tutorials online are stale.
+voice = [
+    "pipecat-ai[nvidia,silero,runner,webrtc,websocket,openai]==1.3.0",
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "httpx>=0.28",
+    "factory-boy>=3.3",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# One event loop for the whole run. The DB engine fixture is session-scoped, and
+# a per-test loop would leave its pooled asyncpg connection bound to a loop that
+# is already closed ("RuntimeError: Event loop is closed" during teardown).
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "integration: requires a live Postgres with the RLS migration applied",
+    "redis: requires a live Redis",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]

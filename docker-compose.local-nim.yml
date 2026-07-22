@@ -1,0 +1,2 @@
+# Optional overlay: self-hosted NIM containers (ASR :50052, TTS :50051, LLM :8000).
+# Pairs with config/services.local.yaml

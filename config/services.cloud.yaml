@@ -1,0 +1,41 @@
+# Hosted NVIDIA NIM services (build.nvidia.com / NVCF).
+# Auth for all three: NVIDIA_API_KEY.
+#
+# Note the split: the LLM is REST on integrate.api.nvidia.com, while ASR and TTS
+# are gRPC on grpc.nvcf.nvidia.com:443 with a `function-id` metadata header.
+# They are hosted, just not on the REST endpoint.
+
+llm:
+  provider: nvidia
+  transport: rest
+  base_url: https://integrate.api.nvidia.com/v1
+  model: nvidia/nemotron-3-nano-30b-a3b
+  params:
+    repetition_penalty: 1.05
+    # enable_thinking is passed as extra_body.chat_template_kwargs.enable_thinking
+    enable_thinking: false
+
+stt:
+  provider: nvidia
+  transport: grpc
+  server: grpc.nvcf.nvidia.com:443
+  use_ssl: true
+  model: nemotron-asr-streaming
+  function_id: bb0837de-8c7b-481f-9ec8-ef5663e9c1fa
+  language: en-US
+
+tts:
+  provider: nvidia
+  transport: grpc
+  server: grpc.nvcf.nvidia.com:443
+  use_ssl: true
+  model: magpie-tts-multilingual
+  function_id: 877104f7-e885-42b9-8de8-f6e4c6303969
+  voice: Magpie-Multilingual.EN-US.Aria
+  synthesis_mode: PER_SENTENCE
+
+embeddings:
+  provider: nvidia
+  transport: rest
+  base_url: https://integrate.api.nvidia.com/v1
+  model: nvidia/nv-embedqa-e5-v5

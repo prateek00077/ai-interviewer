@@ -1,0 +1,2 @@
+# Live interview system prompt.
+# Injected server-side into the Pipecat LLM context - never sent to the client.
