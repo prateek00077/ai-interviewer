@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     # --- Redis ---
     redis_url: str = "redis://localhost:6379/0"
 
+    # --- NVIDIA NIM ---
+    # One key covers LLM (REST), ASR (gRPC) and TTS (gRPC).
+    nvidia_api_key: SecretStr = SecretStr("")
+    # "local" lets a reachable services.local.yaml entry shadow its cloud counterpart.
+    # "cloud" pins the hosted endpoints even when a local NIM happens to be up.
+    nim_profile: Literal["cloud", "local"] = "cloud"
+    nim_request_timeout_secs: float = 60.0
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_csv(cls, v: object) -> object:
@@ -87,6 +95,10 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"JWT_SECRET must be at least {MIN_JWT_SECRET_BYTES} bytes in production"
             )
+        # A missing key only shows up when the first candidate joins an interview and
+        # the pipeline fails to build. Fail at boot instead.
+        if self.nim_profile == "cloud" and not self.nvidia_api_key.get_secret_value():
+            raise ValueError("NVIDIA_API_KEY is required when NIM_PROFILE=cloud")
         return self
 
     @property

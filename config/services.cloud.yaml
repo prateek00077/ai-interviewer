@@ -20,9 +20,19 @@ stt:
   transport: grpc
   server: grpc.nvcf.nvidia.com:443
   use_ssl: true
-  model: nemotron-asr-streaming
+  # The name this function actually serves, confirmed against
+  # GetRivaSpeechRecognitionConfig -- "nemotron-asr-streaming" is rejected with
+  # INVALID_ARGUMENT. Re-run scripts/check_nim.py if the function is ever repointed.
+  #
+  # "sortformer" is speaker diarization built into the ASR model. Proctoring's
+  # second-speaker detection reads it off this stream rather than running a
+  # separate diarization pass.
+  model: cache-aware-parakeet-rnnt-en-US-asr-streaming-sortformer
   function_id: bb0837de-8c7b-481f-9ec8-ef5663e9c1fa
   language: en-US
+  # This function is online-only (offline: False). offline_recognize is an error
+  # against it; every call must go through the streaming API.
+  streaming_only: true
 
 tts:
   provider: nvidia
