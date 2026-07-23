@@ -14,6 +14,7 @@ import pytest
 
 from app.db.session import tenant_session
 from app.models.question_plan import PlanStatus
+from app.models.resume import Resume, ResumeStatus
 from app.modules.question_plan import service as plan_service
 from app.modules.question_plan.generator import GeneratedPlan
 
@@ -346,6 +347,66 @@ async def test_generate_creates_a_pending_shell_and_queues_the_worker(
     assert queued == [
         (registered_org["org_id"], interview["interview_id"], 6, 30, True)
     ]
+
+
+async def test_generate_names_the_resume_it_will_read(
+    api_client, registered_org, interview, monkeypatch
+):
+    """The 202 must say which resume the queued generation is going to use.
+
+    It used to be set only inside the worker, tens of seconds later, so a
+    recruiter who uploaded a CV and clicked Generate read back
+    ``resume_id: null`` -- indistinguishable from the upload having been lost,
+    which is exactly what they were checking for.
+    """
+    monkeypatch.setattr("app.api.v1.question_plans.generate_plan.delay", lambda *a: None)
+
+    org_id = uuid.UUID(registered_org["org_id"])
+    resume_id = uuid.uuid4()
+    async with tenant_session(org_id, "system", None) as s:
+        s.add(
+            Resume(
+                id=resume_id,
+                org_id=org_id,
+                candidate_id=uuid.UUID(interview["candidate_id"]),
+                s3_key=f"{org_id}/{resume_id}.pdf",
+                filename="cv.pdf",
+                content_type="application/pdf",
+                status=ResumeStatus.READY,
+            )
+        )
+
+    response = await api_client.post(
+        _url(interview, "/generate"), headers=_auth(registered_org), json={}
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["resume_id"] == str(resume_id)
+
+
+async def test_generate_ignores_a_resume_that_is_not_ready(
+    api_client, registered_org, interview, monkeypatch
+):
+    """A half-finished upload must not be announced as the source. It has no
+    chunks yet, so the generation would read nothing from it."""
+    monkeypatch.setattr("app.api.v1.question_plans.generate_plan.delay", lambda *a: None)
+
+    org_id = uuid.UUID(registered_org["org_id"])
+    async with tenant_session(org_id, "system", None) as s:
+        s.add(
+            Resume(
+                org_id=org_id,
+                candidate_id=uuid.UUID(interview["candidate_id"]),
+                s3_key=f"{org_id}/pending.pdf",
+                filename="cv.pdf",
+                content_type="application/pdf",
+                status=ResumeStatus.PENDING,
+            )
+        )
+
+    response = await api_client.post(
+        _url(interview, "/generate"), headers=_auth(registered_org), json={}
+    )
+    assert response.json()["resume_id"] is None
 
 
 async def test_generate_is_idempotent_about_the_plan_row(

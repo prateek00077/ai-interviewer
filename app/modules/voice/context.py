@@ -32,7 +32,6 @@ from app.modules.users import service as users_service
 log = structlog.get_logger(__name__)
 
 DEFAULT_DURATION_MINUTES = 30
-RESUME_TOP_K = 6
 
 NO_JOB = "(no job description was provided)"
 NO_RESUME = "(no resume was provided)"
@@ -101,14 +100,14 @@ async def build(session: AsyncSession, interview_id: uuid.UUID) -> InterviewCont
     resume_context = NO_RESUME
     resume = await retriever.latest_ready_resume(session, interview.candidate_id)
     if resume is not None:
-        chunks = await retriever.search(
-            session,
-            resume_id=resume.id,
-            query=f"{job_title}. {job_description}"[:2000],
-            top_k=RESUME_TOP_K,
-        )
-        if chunks:
-            resume_context = "\n\n".join(c.content for c in chunks)
+        # The whole CV, in document order -- same reasoning as the plan
+        # generator (retriever.full_text). This context is built ONCE at session
+        # start, not per turn, so there is no latency argument for trimming it,
+        # and the interviewer improvises: a section it was never shown is a
+        # section it can only invent around.
+        text = await retriever.full_text(session, resume_id=resume.id)
+        if text.strip():
+            resume_context = text
 
     messages = prompts.render(
         "interviewer",

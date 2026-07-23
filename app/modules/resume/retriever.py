@@ -111,6 +111,33 @@ async def search_by_vector(
     return results
 
 
+async def full_text(session: AsyncSession, *, resume_id: uuid.UUID) -> str:
+    """Every chunk of one resume, in document order.
+
+    NOT a search. Similarity retrieval is the right tool on the turn budget,
+    where the question is "which part of this CV is about what was just asked".
+    It is the wrong tool for writing the question plan, and that mismatch is
+    what shipped interviews whose questions named nothing the candidate had
+    done: top-k against the job description ranks the chunks that sound like
+    the vacancy, so a candidate's actual projects lose to whichever section
+    happens to echo the JD's vocabulary, and the model then invents plausible
+    experience to fill the gap.
+
+    A resume is one or two pages. The whole thing fits in the prompt with room
+    to spare, and the model cannot ground a question in a section it was never
+    shown.
+    """
+    rows = (
+        await session.execute(
+            select(ResumeChunk.content)
+            .where(ResumeChunk.resume_id == resume_id)
+            .order_by(ResumeChunk.ordinal)
+        )
+    ).scalars().all()
+    log.debug("resume_full_text", resume_id=str(resume_id), chunks=len(rows))
+    return "\n\n".join(rows)
+
+
 async def context_for(
     session: AsyncSession,
     *,

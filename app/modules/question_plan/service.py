@@ -37,6 +37,7 @@ from app.models.question_plan import (
     RubricCriterion,
 )
 from app.modules.question_plan.generator import GeneratedPlan
+from app.modules.resume import retriever
 
 log = structlog.get_logger(__name__)
 
@@ -121,6 +122,29 @@ async def ensure_plan(
     session.add(plan)
     await session.flush()
     log.info("plan_created", plan_id=str(plan.id), interview_id=str(interview_id))
+    return plan
+
+
+async def attach_latest_resume(
+    session: AsyncSession, *, plan: QuestionPlan, candidate_id: uuid.UUID
+) -> QuestionPlan:
+    """Point the plan at the resume it is about to be generated from.
+
+    The generation task sets this too, and has to: the resume it actually read
+    is the one worth recording. But the task runs tens of seconds later, so a
+    recruiter clicking Generate and reading the response back saw
+    ``resume_id: null`` on a candidate who had uploaded a CV minutes earlier --
+    which reads as "the plan is ignoring the resume", the exact failure they
+    were checking for.
+
+    Resolving it here makes the 202 response tell the truth about which resume
+    the queued generation will use. Only ever set, never cleared: a plan that
+    already names a resume keeps it if the lookup finds nothing.
+    """
+    resume = await retriever.latest_ready_resume(session, candidate_id)
+    if resume is not None and plan.resume_id != resume.id:
+        plan.resume_id = resume.id
+        await session.flush()
     return plan
 
 

@@ -24,22 +24,29 @@ system: |
   questions for THIS candidate, not for the vacancy.
 
   Rules for questions:
-  - EVERY question must name something from the resume: a project, an employer,
-    a technology they listed, a number they claimed. If you cannot point at the
-    line of the resume a question came from, it is the wrong question.
-  - NEVER assume experience the resume does not show. Asking "when you used
-    Celery with async SQLAlchemy, how did you manage transactions?" of someone
-    whose resume is React and MongoDB is not a hard question, it is a broken
-    one: they will say "I have not done that", you learn nothing, and they
-    spend the interview apologising.
-  - Where the role needs something their background does not cover, ask about
-    the CLOSEST thing they have built, or ask how they would approach it --
-    phrased as a hypothetical, not as a memory. "You have used MongoDB
-    heavily. How would you decide between that and Postgres for a
-    multi-tenant billing system?" is fair. "Describe your Postgres
-    partitioning strategy" is not.
-  - Probe depth, not recall. Ask why a decision was made and what the tradeoff
-    cost, rather than for a definition.
+  - EVERY question must be about a specific project, employer, technology or
+    claim that appears IN THE RESUME TEXT, and must name it out loud. Copy the
+    exact words the resume uses for it into `resume_evidence`. If you cannot
+    copy a line from the resume that the question is about, do not ask it.
+  - THE RESUME IS THE ONLY PERMITTED SOURCE OF SUBJECT MATTER. Not the job
+    title, not the role, not what someone with this background usually knows.
+    If the resume says React and MongoDB, every question is about the React
+    and MongoDB work described there -- even if the role is a Postgres role.
+  - NO HYPOTHETICALS ABOUT UNLISTED TECHNOLOGY. "How would you approach
+    Kubernetes?" is not allowed when Kubernetes is absent from the resume, and
+    neither is "how would you decide between MongoDB and Postgres" when
+    Postgres is absent. Asking someone to speculate about tools they have
+    never touched measures confidence, not competence.
+  - NO INFERRED EXPERIENCE. A resume listing Django does not license a
+    question about Celery; a resume listing "REST APIs" does not license a
+    question about gRPC. Only what is written.
+  - Probe depth on what they DID build. Ask why a decision was made, what
+    broke, what the tradeoff cost, what they would change -- about the exact
+    system named on the page. That is where a real signal comes from, and it
+    is available for every candidate no matter what the resume contains.
+  - Spread the questions across the resume: different projects, different
+    roles, different technologies. Do not write six questions about the same
+    project.
   - Cover every rubric criterion at least once, and set `competency` to the
     exact criterion name it produces evidence for.
   - Where the resume claims something significant with no detail, ask about it.
@@ -52,6 +59,9 @@ system: |
   - Score what THIS interview can actually observe, given who this candidate is.
     A criterion nobody could evidence from the questions you wrote is a
     criterion that will come back ungraded.
+  - Name criteria after what the candidate's own work can demonstrate. A
+    criterion the resume gives no opportunity to evidence is a criterion that
+    will be scored on nothing.
   - 3 to 6 criteria. Fewer cannot discriminate; more cannot be scored reliably
     in one conversation.
   - Weights are decimals that MUST sum to exactly 1.0.
@@ -81,14 +91,18 @@ user: |
   The interview runs about {duration_minutes} minutes, so time_budget_secs
   should add up to roughly that.
 
-  Before you answer, check each question: which line of THE CANDIDATE section
-  does it come from? If the answer is "none", rewrite it.
+  Every question needs a `resume_evidence` field containing the words COPIED
+  from THE CANDIDATE section that the question is about. Copy them, do not
+  paraphrase them -- it is how the question is checked. If you find yourself
+  writing evidence that is not in the text above, the question is invented:
+  delete it and ask about something that is.
 
   JSON shape:
   {{
     "questions": [
       {{
         "body": "the question, asked in the second person",
+        "resume_evidence": "the exact words from THE CANDIDATE this is about",
         "competency": "must match a criterion name exactly",
         "follow_up_hints": ["what to probe if the answer is thin"],
         "time_budget_secs": 180

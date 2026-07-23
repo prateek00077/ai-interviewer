@@ -18,6 +18,7 @@ Validation failures go back to the model once as a repair turn (see
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 
 import structlog
@@ -42,6 +43,11 @@ REQUIRED_BANDS = ("1", "3", "5")
 
 class GeneratedQuestion(BaseModel):
     body: str = Field(min_length=10, max_length=2000)
+    # The words from the resume this question is about, copied rather than
+    # paraphrased. Not persisted -- it exists so grounding can be CHECKED
+    # instead of asked for politely. A model that has to quote the line it is
+    # asking about cannot invent the line without the quote failing to match.
+    resume_evidence: str = Field(default="", max_length=1000)
     competency: str | None = Field(default=None, max_length=120)
     follow_up_hints: list[str] = Field(default_factory=list, max_length=6)
     time_budget_secs: int = Field(default=180, ge=30, le=1800)
@@ -224,6 +230,58 @@ class GeneratedPlan(BaseModel):
         return [c.name for c in self.criteria if c.name.strip() not in covered]
 
 
+# A question is grounded when this fraction of the distinctive words in its
+# quoted evidence actually appear in the resume. Not 1.0: the model
+# re-capitalises, drops a bullet's punctuation and occasionally joins two
+# fragments, none of which mean it invented the experience. Well below 1.0 and
+# a question about Kubernetes "grounded" in the word "the" would pass.
+GROUNDING_THRESHOLD = 0.6
+# Below this, dropping ungrounded questions would leave an interview too short
+# to score anything, so they are kept and the failure is logged instead.
+MIN_GROUNDED_QUESTIONS = 3
+# Words that carry no evidence of anything. Overlap on these is noise.
+_STOPWORDS = frozenset(
+    "a an and the of to in on for with at by from as is was were be been using "
+    "used built build developed development work worked experience project "
+    "projects it its this that their they i my our we".split()
+)
+_WORD = re.compile(r"[a-z0-9+#.]+")
+
+
+def _words(text: str) -> list[str]:
+    return [w for w in _WORD.findall(text.lower()) if w not in _STOPWORDS and len(w) > 1]
+
+
+def _ungrounded(plan: GeneratedPlan, resume_context: str) -> list[GeneratedQuestion]:
+    """Questions whose quoted evidence is not in the resume.
+
+    THE CHECK IS AGAINST THE RESUME TEXT, not against the evidence field being
+    non-empty. A model asked to cite its source will happily cite one it made
+    up, and an unverified citation is worth less than none -- it makes an
+    invented question look checked.
+
+    Word overlap rather than substring: the model reformats what it copies
+    (case, punctuation, a bullet split across two lines) far more often than it
+    fabricates, and a substring test fails all of that as if it were invention.
+    """
+    haystack = set(_words(resume_context))
+    if not haystack:
+        return []
+
+    offenders = []
+    for question in plan.questions:
+        needle = _words(question.resume_evidence)
+        # No evidence at all is ungrounded by definition: nothing was claimed,
+        # so nothing was checked.
+        if not needle:
+            offenders.append(question)
+            continue
+        hits = sum(1 for w in needle if w in haystack)
+        if hits / len(needle) < GROUNDING_THRESHOLD:
+            offenders.append(question)
+    return offenders
+
+
 async def generate(
     *,
     job_title: str,
@@ -246,6 +304,72 @@ async def generate(
 
     plan = await nim_client.complete_structured(messages, GeneratedPlan)
     model_name = get_service("llm").model
+
+    # One grounding repair, and only when there is a resume to be grounded in.
+    # The schema was satisfied -- this is the check the schema cannot make --
+    # so it needs its own turn rather than riding on complete_structured's.
+    if resume_context.strip():
+        offenders = _ungrounded(plan, resume_context)
+        if offenders:
+            log.warning(
+                "plan_questions_ungrounded",
+                count=len(offenders),
+                total=len(plan.questions),
+                bodies=[q.body[:120] for q in offenders],
+            )
+            repaired = await nim_client.complete_structured(
+                [
+                    *messages,
+                    {"role": "assistant", "content": plan.model_dump_json()},
+                    {
+                        "role": "user",
+                        "content": (
+                            "These questions are about experience that does not "
+                            "appear in THE CANDIDATE section:\n"
+                            + "\n".join(f"- {q.body}" for q in offenders)
+                            + "\n\nRewrite EVERY one of them to be about work the "
+                            "candidate actually describes, and quote the exact "
+                            "words from THE CANDIDATE in resume_evidence. Keep "
+                            "the questions that were already grounded as they "
+                            "are. Return the complete JSON object again."
+                        ),
+                    },
+                ],
+                GeneratedPlan,
+            )
+            still = _ungrounded(repaired, resume_context)
+            log.info("plan_grounding_repaired", before=len(offenders), after=len(still))
+            plan = repaired
+
+            # WHAT THE REPAIR COULD NOT GROUND IS DROPPED, not asked.
+            #
+            # MEASURED on a real CV: six questions, one ungrounded ("how would
+            # you approach a payment reconciliation service using Celery and S3"
+            # of a candidate with neither on their resume), and the repair turn
+            # returned it unchanged. Same shape as the weights and the
+            # competency tags -- shown its own error, the model repeats itself.
+            #
+            # Asking it anyway costs three minutes of a fixed-length interview
+            # and produces "I have not used that" as the evidence a criterion
+            # gets scored on. A shorter interview is strictly better.
+            #
+            # Down to MIN_GROUNDED_QUESTIONS and no further: if almost nothing
+            # survives, the resume text is probably the problem (a scanned PDF
+            # that parsed to noise), and an odd interview still beats none.
+            if still and len(plan.questions) - len(still) >= MIN_GROUNDED_QUESTIONS:
+                dropped = {id(q) for q in still}
+                plan.questions = [q for q in plan.questions if id(q) not in dropped]
+                log.warning(
+                    "plan_questions_dropped_ungrounded",
+                    dropped=len(still),
+                    remaining=len(plan.questions),
+                )
+            elif still:
+                log.warning(
+                    "plan_grounding_gave_up",
+                    ungrounded=len(still),
+                    total=len(plan.questions),
+                )
 
     uncovered = plan.uncovered_criteria
     if uncovered:

@@ -31,8 +31,6 @@ log = structlog.get_logger(__name__)
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECS = 30
 
-RETRIEVAL_TOP_K = 8
-
 # Past this, a GENERATING plan is assumed to belong to a worker that died
 # rather than to one still working. Comfortably longer than a real generation
 # (two model calls, ~30s each) and shorter than a recruiter's patience.
@@ -211,15 +209,12 @@ async def _gather_context(session, plan, interview_id: uuid.UUID) -> dict[str, s
     resume = await retriever.latest_ready_resume(session, interview.candidate_id)
     if resume is not None:
         plan.resume_id = resume.id
-        chunks = await retriever.search(
-            session,
-            resume_id=resume.id,
-            # No plan exists yet, so there is no question to retrieve against;
-            # the role and its description stand in for one.
-            query=f"{job_title}. {job_description}"[:2000],
-            top_k=RETRIEVAL_TOP_K,
-        )
-        resume_context = "\n\n".join(c.content for c in chunks)
+        # THE WHOLE RESUME, not top-k against the job description. See
+        # retriever.full_text: ranking chunks by similarity to the JD is what
+        # let the model write questions about experience the candidate does not
+        # have, because the sections describing what they actually built never
+        # reached the prompt.
+        resume_context = await retriever.full_text(session, resume_id=resume.id)
 
     await session.flush()
     return {

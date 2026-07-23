@@ -84,6 +84,13 @@ async def request_generation(
     if not plan.is_editable:
         raise plan_service.PlanFrozenError()
 
+    # Before the response is built, so the recruiter can see which resume the
+    # queued generation is going to read rather than a null that looks like the
+    # upload was lost.
+    await plan_service.attach_latest_resume(
+        db, plan=plan, candidate_id=interview.candidate_id
+    )
+
     # Commit before enqueueing, or the worker can read a row that is not yet
     # visible to it.
     await db.commit()
