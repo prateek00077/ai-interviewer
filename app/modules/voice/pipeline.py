@@ -29,6 +29,7 @@ from pipecat.processors.aggregators.llm_response_universal import LLMContextAggr
 from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 
+from app.core.config import settings
 from app.modules.voice import turn_detection
 from app.modules.voice.nvidia import llm as llm_service
 from app.modules.voice.nvidia import stt as stt_service
@@ -53,6 +54,9 @@ class BuiltPipeline:
     observer: TranscriptObserver
     tts: object
     context: LLMContext
+    # Kept so the session manager can hang the opening greeting off
+    # ``on_client_connected``. See session_manager._open_the_conversation.
+    transport: SmallWebRTCTransport
 
 
 def build(
@@ -103,6 +107,15 @@ def build(
             enable_usage_metrics=True,
         ),
         observers=[observer],
+        # Idle = nobody has spoken, in either direction, for this long.
+        idle_timeout_secs=settings.voice_idle_nudge_secs,
+        # PIPECAT'S DEFAULT IS TO CANCEL THE PIPELINE ON IDLE, after 300s. That
+        # is wrong for an interview twice over: five minutes of a candidate
+        # thinking is not abandonment, and killing the call is not the right
+        # response to silence -- asking "are you still there?" is. The session
+        # manager handles the event and decides when to give up.
+        cancel_on_idle_timeout=False,
+        cancel_runner_on_idle_timeout=False,
     )
 
     log.info("voice.pipeline_built", processors=len(pipeline.processors))
@@ -112,4 +125,5 @@ def build(
         observer=observer,
         tts=tts,
         context=context,
+        transport=transport,
     )

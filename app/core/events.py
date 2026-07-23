@@ -90,6 +90,24 @@ class ProctorEventRaised(Event):
     payload: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class VoiceSignalObserved(Event):
+    """Raw acoustic observations from the live ASR stream.
+
+    RAW, not interpreted. The voice module reports what the diarizer tagged and
+    how long the gap was; ``modules/proctoring`` decides whether that means a
+    second person in the room. Keeping the judgement on the proctoring side is
+    what lets the thresholds change without touching the pipeline, and what
+    keeps ``voice/`` from importing a proctoring model.
+    """
+
+    # Diarized speaker id -> words attributed to it, for this utterance.
+    speaker_tag_counts: dict[int, int] = field(default_factory=dict)
+    # Silence since the candidate's previous utterance.
+    silence_gap_ms: int = 0
+    offset_ms: int = 0
+
+
 EventT = TypeVar("EventT", bound=Event)
 Handler = Callable[[Any], Awaitable[None] | None]
 
@@ -151,9 +169,19 @@ class EventBus:
         except asyncio.CancelledError:
             raise
         except Exception:
+            # ``event_type``, NOT ``event``. structlog takes the message as its
+            # first positional parameter *named* ``event``, so a keyword of that
+            # name collides:
+            #     TypeError: exception() got multiple values for argument 'event'
+            #
+            # OBSERVED in production logs: a handler raised ConflictError, and
+            # the line meant to report it raised instead -- so the only place a
+            # failed subscriber becomes visible was itself broken, and the
+            # original error vanished. Second time a structlog reserved key has
+            # done this here; see core/logging.py for the first.
             log.exception(
                 "event_handler_failed",
-                event=type(event).__name__,
+                event_type=type(event).__name__,
                 handler=getattr(handler, "__qualname__", repr(handler)),
                 interview_id=str(event.interview_id),
             )

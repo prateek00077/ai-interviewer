@@ -127,8 +127,40 @@ async def test_another_org_cannot_read_the_plan(api_client, registered_org, inte
     assert (await api_client.get(_url(interview), headers=_auth(rival))).status_code == 404
 
 
-async def test_an_interview_with_no_plan_is_a_404(api_client, registered_org, interview):
-    assert (await api_client.get(_url(interview), headers=_auth(registered_org))).status_code == 404
+async def test_an_interview_with_no_plan_is_a_404(api_client, registered_org):
+    """Scheduled directly rather than invited.
+
+    Inviting now opens the plan row and enqueues generation, so an invited
+    interview always has a plan -- the 404 only survives for an interview
+    scheduled ahead of time and not yet invited, which is exactly when a
+    recruiter would hit it.
+    """
+    candidate = await api_client.post(
+        "/api/v1/candidates",
+        headers=_auth(registered_org),
+        json={"email": f"noplan-{uuid.uuid4().hex[:8]}@example.com", "full_name": "No Plan"},
+    )
+    assert candidate.status_code == 201, candidate.text
+
+    scheduled = await api_client.post(
+        "/api/v1/interviews",
+        headers=_auth(registered_org),
+        json={"candidate_id": candidate.json()["id"]},
+    )
+    assert scheduled.status_code == 201, scheduled.text
+
+    response = await api_client.get(
+        f"/api/v1/interviews/{scheduled.json()['id']}/plan", headers=_auth(registered_org)
+    )
+    assert response.status_code == 404
+
+
+async def test_inviting_a_candidate_opens_a_plan(api_client, registered_org, interview):
+    """The other half: a plan exists from the moment the invite is created, so a
+    recruiter sees "generating" rather than a 404 while the model runs."""
+    response = await api_client.get(_url(interview), headers=_auth(registered_org))
+    assert response.status_code == 200, response.text
+    assert response.json()["generation_status"] in ("PENDING", "GENERATING", "READY", "FAILED")
 
 
 # --- Editing ----------------------------------------------------------------
@@ -309,8 +341,10 @@ async def test_generate_creates_a_pending_shell_and_queues_the_worker(
     assert body["generation_status"] == "PENDING"
     assert body["questions"] == []
 
+    # The trailing True is ``force``: a recruiter clicking Generate on a plan
+    # that already exists means "do it again", not "skip because there is one".
     assert queued == [
-        (registered_org["org_id"], interview["interview_id"], 6, 30)
+        (registered_org["org_id"], interview["interview_id"], 6, 30, True)
     ]
 
 
@@ -327,3 +361,41 @@ async def test_generate_is_idempotent_about_the_plan_row(
         _url(interview, "/generate"), headers=_auth(registered_org), json={}
     )
     assert first.json()["id"] == second.json()["id"]
+
+
+@pytest.fixture
+def queued(monkeypatch) -> list:
+    """Capture the dispatch instead of reaching the broker."""
+    from app.workers.tasks import plan_tasks
+
+    calls: list = []
+    monkeypatch.setattr(plan_tasks.generate_plan, "delay", lambda *a, **k: calls.append((a, k)))
+    return calls
+
+
+async def test_generation_accepts_a_request_with_no_body(
+    api_client, registered_org, interview, queued
+):
+    """A bare POST is the obvious call, and every field has a default.
+
+    Requiring a body meant the test console -- and anything else that just
+    posted to the URL -- got 422 "body: Field required", while the plan appeared
+    anyway from the invite-time generation. That combination reads as a flaky
+    endpoint rather than a strict one.
+    """
+    response = await api_client.post(
+        f"{_url(interview)}/generate", headers=_auth(registered_org)
+    )
+    assert response.status_code == 202, response.text
+
+
+async def test_generation_still_honours_an_explicit_body(
+    api_client, registered_org, interview, queued
+):
+    response = await api_client.post(
+        f"{_url(interview)}/generate",
+        headers=_auth(registered_org),
+        json={"question_count": 5, "duration_minutes": 20},
+    )
+    assert response.status_code == 202, response.text
+    assert queued and queued[-1][0][2:] == (5, 20, True), queued

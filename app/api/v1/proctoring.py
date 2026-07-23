@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, s
 from sqlalchemy import select
 
 from app.api.deps import Principal, ScopedSession, get_current_candidate, require_role
+from app.api.routing import CommittingRoute
 from app.core.config import settings
 from app.core.exceptions import NotFoundError
 from app.core.security import InterviewClaims, TokenType, decode_token
@@ -50,7 +51,7 @@ from app.schemas.proctoring import (
 
 log = structlog.get_logger(__name__)
 
-router = APIRouter(tags=["proctoring"])
+router = APIRouter(tags=["proctoring"], route_class=CommittingRoute)
 
 Recruiter = Annotated[Principal, Depends(require_role(UserRole.ADMIN, UserRole.RECRUITER))]
 CurrentCandidate = Annotated[Principal, Depends(get_current_candidate)]

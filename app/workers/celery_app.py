@@ -64,6 +64,26 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
 )
 
+# THE PROCESS-WIDE DEFAULT, not merely the current one.
+#
+# ``Celery(...)`` sets itself as *current*, and current_app lives in a
+# THREAD-LOCAL. Every task here is declared with ``@shared_task``, which
+# resolves its app lazily through that thread-local -- so on any thread that did
+# not construct this object, ``shared_task`` silently falls back to Celery's
+# built-in default app: no broker, no result backend.
+#
+# That is not hypothetical. The API enqueues the post-interview chain through
+# ``asyncio.to_thread`` (apply_async does blocking socket I/O and must not sit
+# on the event loop serving live voice sessions). OBSERVED before this line
+# existed: every interview completed, and nothing was ever scored or rendered.
+# The chain raised "Starting chords requires a result backend to be configured"
+# on the worker thread, ``pipeline.enqueue`` caught it by design, and the only
+# trace was one log line.
+#
+# ``set_default`` writes the global fallback that every thread sees, which fixes
+# it at the root rather than one canvas node at a time.
+celery_app.set_default()
+
 
 @celery_app.on_after_configure.connect  # type: ignore[misc]
 def _setup_logging(sender: Any, **_: Any) -> None:

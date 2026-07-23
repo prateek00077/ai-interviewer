@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import structlog
 
+from app.core.events import VoiceSignalObserved, subscribe
 from app.models.proctoring import ProctorEventType, ProctorSeverity
 
 log = structlog.get_logger(__name__)
@@ -93,3 +94,77 @@ def assess_silence(gap_ms: int) -> VoiceFinding | None:
         ProctorSeverity.INFO,
         f"{gap_ms // 1000}s of silence mid-answer",
     )
+
+
+# --- Bus wiring -------------------------------------------------------------
+
+
+async def _on_voice_signal(event: VoiceSignalObserved) -> None:
+    """Turn a raw acoustic observation into a stored proctoring event.
+
+    Subscribed rather than called, so ``voice/`` never imports this module and
+    the pipeline can move to its own process. Everything here is best-effort:
+    a proctoring signal that fails must not disturb a live interview, and the
+    verdict is recomputed from whatever events did land.
+    """
+    findings: list[VoiceFinding] = []
+
+    speakers = assess_speakers(event.speaker_tag_counts)
+    if speakers is not None:
+        findings.append(speakers)
+
+    silence = assess_silence(event.silence_gap_ms)
+    if silence is not None:
+        findings.append(silence)
+
+    if not findings:
+        return
+
+    from app.db.session import tenant_session
+    from app.modules.proctoring import collector, rules
+
+    try:
+        async with tenant_session(event.org_id, "system", None) as session:
+            thresholds = rules.Thresholds.from_policy(
+                await collector.policy_for_interview(session, event.interview_id)
+            )
+            counters = collector.SessionCounters()
+            await counters.prime(session, event.interview_id)
+
+            for finding in findings:
+                await collector.record(
+                    session,
+                    org_id=event.org_id,
+                    interview_id=event.interview_id,
+                    event_type=finding.event_type,
+                    thresholds=thresholds,
+                    counters=counters,
+                    payload={"note": finding.note, "source": "audio"},
+                    offset_ms=event.offset_ms,
+                    # Server-derived: the severity comes from the rules that
+                    # detected it, not from the browser, which is the whole
+                    # reason a client may not claim these event types.
+                    severity=finding.severity,
+                )
+        log.info(
+            "proctor.voice_signals_recorded",
+            interview_id=str(event.interview_id),
+            findings=[f.event_type.value for f in findings],
+        )
+    except Exception:  # noqa: BLE001 - never break a call over a signal
+        log.warning(
+            "proctor.voice_signal_failed",
+            interview_id=str(event.interview_id),
+            exc_info=True,
+        )
+
+
+def register() -> None:
+    """Wire this module to the bus. Called once from the app lifespan.
+
+    UNTIL THIS EXISTED, NOTHING IMPORTED THIS MODULE. The detection logic was
+    written and unit-tested in the proctoring slice and then never connected, so
+    ``SECOND_SPEAKER`` and ``ANOMALOUS_SILENCE`` could not fire at all -- a
+    recruiter's proctoring report showed only what the browser volunteered.
+    """
+    subscribe(VoiceSignalObserved, _on_voice_signal)

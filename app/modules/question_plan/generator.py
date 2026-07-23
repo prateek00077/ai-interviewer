@@ -24,7 +24,7 @@ import structlog
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.integrations import nim_client
-from app.models.question_plan import WEIGHT_SCALE, WEIGHT_TOLERANCE
+from app.models.question_plan import WEIGHT_SCALE
 from app.modules import prompts
 from app.modules.voice.nvidia.catalog import get_service
 
@@ -68,6 +68,53 @@ class GeneratedPlan(BaseModel):
     questions: list[GeneratedQuestion] = Field(min_length=1, max_length=40)
     criteria: list[GeneratedCriterion] = Field(min_length=MIN_CRITERIA, max_length=MAX_CRITERIA)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _trim_overlong_rubric(cls, data: object) -> object:
+        """Keep the heaviest MAX_CRITERIA and drop the rest, rather than reject.
+
+        MEASURED: asked for 3 to 6 criteria, Nemotron-3-Nano returns 8, and
+        shown ``List should have at most 6 items`` it returns 8 again. Third
+        instance of the same pattern -- the model is good at naming dimensions
+        and bad at arithmetic and counting.
+
+        Dropped by ascending weight, so what goes is what the model itself rated
+        least important. Weight normalisation runs afterwards and rescales the
+        survivors back to 1.0, so the rubric stays coherent.
+
+        A ``mode="before"`` validator because ``max_length`` on the field is
+        checked before any ``mode="after"`` hook could intervene.
+
+        The cap is a product constraint, not a technical one: more than six
+        dimensions cannot be scored reliably in one conversation, and each one
+        costs another model call at scoring time. Trimming honours the cap;
+        raising it would quietly abandon it.
+        """
+        if not isinstance(data, dict):
+            return data
+        criteria = data.get("criteria")
+        if not isinstance(criteria, list) or len(criteria) <= MAX_CRITERIA:
+            return data
+
+        def _weight(item: object) -> Decimal:
+            try:
+                return Decimal(str(item.get("weight", 0)))  # type: ignore[attr-defined]
+            except (AttributeError, ArithmeticError, TypeError, ValueError):
+                return Decimal(0)
+
+        kept = sorted(criteria, key=_weight, reverse=True)[:MAX_CRITERIA]
+        dropped = [c.get("name") for c in criteria if c not in kept]
+        log.warning(
+            "plan_rubric_trimmed",
+            returned=len(criteria),
+            kept=MAX_CRITERIA,
+            dropped=dropped,
+        )
+        # Original ordering preserved among survivors: the model puts the
+        # criteria in a deliberate order and reordering them by weight would
+        # reshuffle the rubric a recruiter is about to read.
+        return {**data, "criteria": [c for c in criteria if c in kept]}
+
     @model_validator(mode="after")
     def _check_rubric(self) -> GeneratedPlan:
         names = [c.name.strip() for c in self.criteria]
@@ -76,17 +123,37 @@ class GeneratedPlan(BaseModel):
 
         self._normalise_weights()
 
-        unknown = {
-            q.competency
-            for q in self.questions
-            if q.competency and q.competency.strip() not in set(names)
-        }
-        if unknown:
-            raise ValueError(
-                f"questions reference criteria that do not exist: {sorted(unknown)}. "
-                f"Valid names: {names}"
-            )
+        self._drop_unmatched_competencies(set(names))
         return self
+
+    def _drop_unmatched_competencies(self, names: set[str]) -> None:
+        """Clear competency tags that name no criterion, rather than rejecting.
+
+        MEASURED BEHAVIOUR, same shape as the weights problem below: Nemotron
+        invents question-level tags that do not appear in the rubric it just
+        wrote -- ``testing_async_sqlalchemy`` alongside criteria called
+        ``async_processing`` and ``schema_design`` -- and shown the exact
+        validation error, it does it again. Two calls, one plan thrown away.
+
+        Rejecting was also inconsistent with what the rest of the system already
+        does. ``PlannedQuestion.competency`` is documented as a soft join key
+        precisely because the LLM emits both halves in one pass, and the scorer
+        already treats an unmatched competency as ungraded. The validator was
+        the only component that treated a tagging slip as fatal.
+
+        So an unmatched tag is dropped and the question is kept. The question is
+        the valuable part -- it still gets asked, still produces evidence, and
+        the criterion it half-belonged to is scored from the transcript as a
+        whole. What is lost is a hint, and the loss is logged.
+        """
+        for question in self.questions:
+            if question.competency and question.competency.strip() not in names:
+                log.warning(
+                    "plan_competency_unmatched",
+                    competency=question.competency,
+                    valid=sorted(names),
+                )
+                question.competency = None
 
     def _normalise_weights(self) -> None:
         """Rescale weights to sum to exactly 1.0.
@@ -112,21 +179,37 @@ class GeneratedPlan(BaseModel):
                 "Use decimal fractions, not percentages or arbitrary points."
             )
 
-        # Rescale only when the drift is real. Within tolerance the model's own
-        # numbers are kept, because rescaling 0.4/0.3/0.3 through a division
-        # would turn readable weights into 0.4000/0.3000/0.3000 for nothing.
-        if abs(total - Decimal(1)) > WEIGHT_TOLERANCE:
-            quantum = Decimal(1).scaleb(-WEIGHT_SCALE)
-            for criterion in self.criteria:
-                criterion.weight = (criterion.weight / total).quantize(quantum)
+        # QUANTIZE UNCONDITIONALLY, at the precision the column actually stores.
+        #
+        # This used to run only when the total drifted past WEIGHT_TOLERANCE, on
+        # the reasoning that rescaling 0.4/0.3/0.3 through a division buys
+        # nothing. That reasoning was wrong, and the bug it caused survived
+        # every unit test:
+        #
+        # Nemotron returns six criteria at 0.16666666666666666. In Python those
+        # sum to 0.99999999999999996 -- within tolerance, so the old code left
+        # them alone and the assertion below passed at full Decimal precision.
+        # But ``RubricCriterion.weight`` is Numeric(5,4), so Postgres rounds
+        # each one to 0.1667 on INSERT, and six of those sum to 1.0002.
+        #
+        # Quantization does not distribute over addition. Enforcing the
+        # invariant at a precision finer than the one you store it at enforces
+        # nothing. OBSERVED end to end: every rubric with a weight that is not
+        # exactly representable in four places reached the database summing to
+        # something other than 1.0, and the scorer's weighted mean was computed
+        # against it.
+        quantum = Decimal(1).scaleb(-WEIGHT_SCALE)
+        for criterion in self.criteria:
+            criterion.weight = (criterion.weight / total).quantize(quantum)
 
-        # Then make the sum EXACT, in both branches. Rescaling leaves a few
-        # ten-thousandths of rounding behind, and a within-tolerance total like
-        # 0.9999 is still not 1.0 -- the scorer's weighted mean and every
-        # assertion downstream assume exactness, so "close enough" cannot be
-        # allowed to reach the database.
+        # Then make the sum EXACT. Quantizing six sixths leaves a rounding
+        # remainder no matter how it is done, and the scorer's weighted mean and
+        # every assertion downstream assume exactness -- so the remainder is put
+        # somewhere deliberate rather than left to land wherever.
         drift = Decimal(1) - sum((c.weight for c in self.criteria), Decimal(0))
         if drift:
+            # Onto the heaviest criterion, where a ten-thousandth is the
+            # smallest relative distortion available.
             max(self.criteria, key=lambda c: c.weight).weight += drift
 
     @property

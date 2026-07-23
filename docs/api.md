@@ -131,6 +131,13 @@ about someone else's interview because there is nowhere to put another id.
 
 **No candidate route exists, and RLS enforces it** — the plan is the answer key.
 
+Generation starts automatically at **invite time**, not when a recruiter asks.
+A candidate can redeem a link within seconds while generation takes tens of
+seconds, so deferring it to a click is how someone gets interviewed with no plan
+at all. `POST /plan/generate` is for regeneration; it returns
+`skipped: already generating` if one is already in flight, so the two paths
+cannot race each other into a half-written rubric.
+
 Edits carry the version the client read; a mismatch is `409` so two recruiters
 cannot silently overwrite each other. The plan freezes when the interview
 starts and is immutable after: an interview must be scorable against the exact

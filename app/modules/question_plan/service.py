@@ -18,6 +18,7 @@ human who made it.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import structlog
@@ -27,6 +28,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import ConflictError, NotFoundError
 from app.models.question_plan import (
+    WEIGHT_SCALE,
     WEIGHT_TOLERANCE,
     PlanGenerationStatus,
     PlannedQuestion,
@@ -281,11 +283,24 @@ async def replace_criteria(
     """Overwrite the rubric. Weights must sum to 1.0 exactly."""
     _guard(plan, expected_version)
 
-    total = sum((Decimal(str(c["weight"])) for c in criteria), Decimal(0))
+    # Quantized to the stored precision BEFORE the check, because that is the
+    # precision the invariant has to hold at. ``weight`` is Numeric(5,4), so
+    # three criteria at 0.3333333333 pass a full-precision check and land in the
+    # database summing to 0.9999. Same defect the generator had; see
+    # ``generator._normalise_weights`` for the measured case that found it.
+    quantum = Decimal(1).scaleb(-WEIGHT_SCALE)
+    weights = [Decimal(str(c["weight"])).quantize(quantum) for c in criteria]
+
+    total = sum(weights, Decimal(0))
     if abs(total - Decimal(1)) > WEIGHT_TOLERANCE:
         # Not normalised, unlike model output: a human edit is deliberate, and
         # silently rescaling it would change weights the recruiter chose.
         raise ConflictError(f"Criterion weights must sum to 1.0, got {total}.")
+    if total != Decimal(1):
+        # Within tolerance but not exact -- a recruiter typing 0.33/0.33/0.34 is
+        # fine, one typing 0.3333/0.3333/0.3333 is 0.0001 short. Reject rather
+        # than quietly adjust: which criterion would we take it from?
+        raise ConflictError(f"Criterion weights must sum to exactly 1.0, got {total}.")
 
     names = [c["name"].strip() for c in criteria]
     if len(set(names)) != len(names):
@@ -310,7 +325,7 @@ async def replace_criteria(
                 ordinal=ordinal,
                 name=criterion["name"].strip(),
                 description=criterion.get("description"),
-                weight=Decimal(str(criterion["weight"])),
+                weight=weights[ordinal],
                 descriptors=criterion.get("descriptors") or {},
             )
         )
@@ -335,6 +350,9 @@ async def approve(
         raise ConflictError("Cannot approve a plan with no questions or no rubric.")
 
     plan.status = PlanStatus.APPROVED
+    # Recorded separately from the status, which freeze() overwrites. See
+    # QuestionPlan.approved_at.
+    plan.approved_at = datetime.now(UTC)
     plan.version += 1
     await session.flush()
     log.info("plan_approved", plan_id=str(plan.id))

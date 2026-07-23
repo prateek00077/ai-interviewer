@@ -17,6 +17,7 @@ import structlog
 from fastapi import APIRouter, Depends, status
 
 from app.api.deps import Principal, ScopedSession, get_current_candidate, require_role
+from app.api.routing import CommittingRoute
 from app.core.config import settings
 from app.core.exceptions import ConflictError, NotFoundError
 from app.models.report import ReportStatus
@@ -33,7 +34,7 @@ from app.schemas.report import (
 
 log = structlog.get_logger(__name__)
 
-router = APIRouter(tags=["reports"])
+router = APIRouter(tags=["reports"], route_class=CommittingRoute)
 
 Recruiter = Annotated[Principal, Depends(require_role(UserRole.ADMIN, UserRole.RECRUITER))]
 CurrentCandidate = Annotated[Principal, Depends(get_current_candidate)]

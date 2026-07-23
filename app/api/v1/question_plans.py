@@ -16,6 +16,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, status
 
 from app.api.deps import Principal, ScopedSession, require_role
+from app.api.routing import CommittingRoute
 from app.core.exceptions import NotFoundError
 from app.models.user import UserRole
 from app.modules.interview import service as interview_service
@@ -29,7 +30,11 @@ from app.schemas.question_plan import (
 )
 from app.workers.tasks.plan_tasks import generate_plan
 
-router = APIRouter(prefix="/interviews/{interview_id}/plan", tags=["question-plans"])
+router = APIRouter(
+    prefix="/interviews/{interview_id}/plan",
+    tags=["question-plans"],
+    route_class=CommittingRoute,
+)
 
 Recruiter = Annotated[Principal, Depends(require_role(UserRole.ADMIN, UserRole.RECRUITER))]
 
@@ -56,15 +61,22 @@ async def get_plan(
 )
 async def request_generation(
     interview_id: uuid.UUID,
-    payload: GeneratePlanRequest,
     db: ScopedSession,
     principal: Recruiter,
+    payload: GeneratePlanRequest | None = None,
 ) -> QuestionPlanRead:
     """202, not 201: the model call happens in a worker.
 
     The response is the PENDING shell, so the client has a row to poll rather
     than a job id to correlate.
     """
+    # OPTIONAL BODY. Every field has a default, so requiring one meant a bare
+    # ``POST .../plan/generate`` -- the obvious call, and what the test console
+    # sent -- was a 422 with "body: Field required". Nothing about regenerating
+    # a plan needs parameters; asking for them was the endpoint being fussy
+    # about something it did not care about.
+    payload = payload or GeneratePlanRequest()
+
     interview = await interview_service.get_interview(db, interview_id)
     plan = await plan_service.ensure_plan(
         db, org_id=principal.org_id, interview_id=interview.id
@@ -75,11 +87,14 @@ async def request_generation(
     # Commit before enqueueing, or the worker can read a row that is not yet
     # visible to it.
     await db.commit()
+    # force: a recruiter clicking Generate on a plan that already exists means
+    # "do it again", not "skip because there is one".
     generate_plan.delay(
         str(principal.org_id),
         str(interview_id),
         payload.question_count,
         payload.duration_minutes,
+        True,
     )
     return QuestionPlanRead.model_validate(await plan_service.get_plan(db, plan.id))
 

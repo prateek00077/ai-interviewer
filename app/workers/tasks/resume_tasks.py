@@ -18,6 +18,7 @@ import uuid
 
 import structlog
 from celery import shared_task
+from sqlalchemy import select
 
 from app.core.config import settings
 from app.db.session import tenant_session
@@ -94,9 +95,62 @@ async def _process(org_id: uuid.UUID, resume_id: uuid.UUID) -> dict:
     log.info(
         "resume_ready", resume_id=str(resume_id), chunks=len(chunks), embedded=embedded
     )
+    regenerated = await _regenerate_plans_without_this_resume(org_id, resume_id)
     return {
+        "plans_regenerated": regenerated,
         "resume_id": str(resume_id),
         "status": "READY",
         "chunks": len(chunks),
         "embedded": embedded,
     }
+
+
+async def _regenerate_plans_without_this_resume(
+    org_id: uuid.UUID, resume_id: uuid.UUID
+) -> int:
+    """Re-plan any of this candidate's interviews that were planned without a CV.
+
+    THE ORDERING IS UNAVOIDABLE. Plan generation starts when the invite is
+    created, because a candidate can redeem the link seconds later and an
+    interview with no plan is worse than one planned from the job description
+    alone. But the candidate uploads their resume *after* redeeming -- so the
+    first generation almost always runs before the CV exists.
+
+    OBSERVED: every question_plan row had ``resume_id = NULL`` while the
+    candidate's resume sat READY, and the questions were generic because the
+    prompt never saw their background. The whole point of ingesting a resume is
+    that the questions reference the candidate's actual projects.
+
+    So the resume finishing is what triggers a re-plan. Only for plans that do
+    not already have one, and only while they are still editable -- a frozen
+    plan is the record of what an in-flight interview is being conducted
+    against and must not move underneath it.
+    """
+    from app.models.interview import Interview
+    from app.models.question_plan import PlanStatus, QuestionPlan
+    from app.workers.tasks.plan_tasks import generate_plan
+
+    async with tenant_session(org_id, "system", None) as session:
+        resume = await service.get_resume(session, resume_id)
+        rows = (
+            await session.execute(
+                select(QuestionPlan.interview_id)
+                .join(Interview, Interview.id == QuestionPlan.interview_id)
+                .where(
+                    Interview.candidate_id == resume.candidate_id,
+                    QuestionPlan.resume_id.is_(None),
+                    QuestionPlan.status != PlanStatus.FROZEN,
+                )
+            )
+        ).scalars().all()
+
+    for interview_id in rows:
+        log.info(
+            "resume_triggered_replan",
+            resume_id=str(resume_id),
+            interview_id=str(interview_id),
+        )
+        # force: this replan has the CV the first one lacked, so it must not be
+        # dropped as a duplicate of the generation already running.
+        generate_plan.delay(str(org_id), str(interview_id), force=True)
+    return len(rows)

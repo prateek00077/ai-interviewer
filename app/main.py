@@ -24,6 +24,7 @@ from app.db.session import dispose_engine
 from app.modules.auth.tokens import RefreshTokenStore
 from app.modules.interview import service as interview_service
 from app.modules.interview import transcript
+from app.modules.proctoring import voice_signals
 
 log = structlog.get_logger(__name__)
 
@@ -37,6 +38,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # every time a test re-imported the app.
     interview_service.register()
     transcript.register()
+    voice_signals.register()
 
     # Explicitly cleared, not merely defaulted. The flag is a module global, so
     # a process that starts a second app after shutting one down -- every test
@@ -102,6 +104,13 @@ def create_app() -> FastAPI:
     # orchestrator that has no credentials, and /health pinned to /api/v1 would
     # have to be re-pointed at every API version bump.
     app.include_router(ops.router)
+
+    if not settings.is_production:
+        # A console that can mint invites has no business being reachable on a
+        # deployed instance, path-obscurity notwithstanding. Same rule as /docs.
+        from app.api import dev
+
+        app.include_router(dev.router)
 
     return app
 

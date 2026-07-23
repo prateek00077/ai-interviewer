@@ -12,6 +12,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, status
 
 from app.api.deps import Principal, ScopedSession, require_role
+from app.api.routing import CommittingRoute
 from app.models.job import JobStatus
 from app.models.user import UserRole
 from app.modules.jobs import service as jobs_service
@@ -24,7 +25,7 @@ from app.schemas.job import (
     JobUpdate,
 )
 
-router = APIRouter(prefix="/jobs", tags=["jobs"])
+router = APIRouter(prefix="/jobs", tags=["jobs"], route_class=CommittingRoute)
 
 Recruiter = Annotated[Principal, Depends(require_role(UserRole.ADMIN, UserRole.RECRUITER))]
 

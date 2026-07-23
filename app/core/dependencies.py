@@ -164,15 +164,32 @@ async def get_current_org(principal: CurrentPrincipal) -> uuid.UUID:
 # --- Scoped database session ------------------------------------------------
 
 
-async def get_db(principal: CurrentPrincipal) -> AsyncIterator[AsyncSession]:
+async def get_db(
+    request: Request, principal: CurrentPrincipal
+) -> AsyncIterator[AsyncSession]:
     """The org-scoped session every authenticated route should depend on.
 
     Because the GUCs come from ``principal``, a route that forgets to filter by
     org is still safe -- the policy filters for it.
+
+    THE SESSION IS PARKED ON ``request.state`` so ``CommitBeforeResponse`` can
+    commit it while the response is still in flight. FastAPI runs the exit code
+    of a ``yield`` dependency *after* the response has been sent, so relying on
+    ``tenant_session``'s own commit means the client learns about a row roughly
+    a millisecond before that row exists.
+
+    MEASURED: 7 of 20 ``POST /jobs`` calls had not committed when the 201
+    reached the client. A browser posting a job and immediately posting its
+    description got "Job not found."; curl was slow enough to hide it. See
+    ``core/middleware.py``.
+
+    The context manager still wraps everything, so a failed request still rolls
+    back and every request still closes its session.
     """
     async with tenant_session(
         principal.org_id, principal.actor_kind.value, principal.actor_id
     ) as session:
+        request.state.db = session
         yield session
 
 

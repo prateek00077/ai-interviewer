@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Interviewer — test console</title>
+<style>
+  :root { --bg:#0f1115; --panel:#181b21; --line:#2a2f38; --ink:#e8eaed; --dim:#9aa3af;
+          --ok:#4ade80; --bad:#f87171; --warn:#fbbf24; --accent:#60a5fa; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 ui-sans-serif,system-ui,sans-serif; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:600; }
+  main { display:grid; grid-template-columns:1fr 1fr; gap:14px; padding:14px; align-items:start; }
+  @media (max-width:1000px){ main { grid-template-columns:1fr; } }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; }
+  h2 { font-size:13px; margin:0 0 10px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); }
+  label { display:block; font-size:12px; color:var(--dim); margin:8px 0 3px; }
+  input, textarea, select { width:100%; background:#0c0e12; color:var(--ink); border:1px solid var(--line);
+         border-radius:5px; padding:7px 9px; font:13px ui-monospace,monospace; }
+  textarea { min-height:70px; resize:vertical; }
+  button { background:var(--accent); color:#06121f; border:0; border-radius:5px; padding:7px 13px;
+           font-weight:600; cursor:pointer; margin:8px 6px 0 0; font-size:13px; }
+  button.ghost { background:#252a33; color:var(--ink); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  pre { background:#0c0e12; border:1px solid var(--line); border-radius:5px; padding:9px;
+        max-height:300px; overflow:auto; font:12px/1.45 ui-monospace,monospace; white-space:pre-wrap;
+        word-break:break-word; margin:8px 0 0; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  .row > * { flex:1; min-width:130px; }
+  .pill { font-size:11px; padding:2px 8px; border-radius:99px; border:1px solid var(--line); color:var(--dim); }
+  .pill.on { color:var(--ok); border-color:var(--ok); }
+  .pill.off { color:var(--bad); border-color:var(--bad); }
+  .pill.warn { color:var(--warn); border-color:var(--warn); }
+  .ok { color:var(--ok); } .bad { color:var(--bad); } .warn { color:var(--warn); }
+  .hint { font-size:11px; color:var(--dim); margin-top:6px; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AI Interviewer — test console</h1>
+  <span id="health" class="pill">health…</span>
+  <span id="ready" class="pill">ready…</span>
+  <span id="who" class="pill">not signed in</span>
+  <span id="cand" class="pill">no candidate token</span>
+  <button class="ghost" onclick="runAll()">Run full flow</button>
+  <button class="ghost" onclick="location.reload()">Reset</button>
+</header>
+
+<main>
+
+<!-- ───────────────────────── recruiter ───────────────────────── -->
+<section>
+  <h2>1 · Recruiter</h2>
+  <div class="row">
+    <div><label>Org slug</label><input id="slug"></div>
+    <div><label>Password</label><input id="pw" value="correct-horse-battery-staple"></div>
+  </div>
+  <label>Admin email</label><input id="email">
+  <button onclick="registerOrg()">Register org</button>
+  <button class="ghost" onclick="login()">Login</button>
+  <div class="hint">Register mints a new tenant and signs you in. Login reuses one you already made.</div>
+  <pre id="out-auth">—</pre>
+</section>
+
+<section>
+  <h2>2 · Job &amp; rubric inputs</h2>
+  <label>Job title</label><input id="jobTitle" value="Senior Backend Engineer">
+  <label>Job description</label>
+  <textarea id="jd">We are hiring a senior backend engineer for a multi-tenant Python platform: FastAPI, Postgres, async SQLAlchemy, Celery and S3-compatible object storage.
+
+You will own service boundaries end to end, from schema design through to the queries that run in production. We care most about how you reason about tradeoffs — consistency against latency, isolation against complexity — and whether you can explain a decision you made and what it cost you.
+
+Requirements: strong Python, real experience with relational data modelling and concurrency, and comfort operating what you build.</textarea>
+  <div class="row">
+    <div><label>Blur limit</label><input id="blurLimit" type="number" value="2"></div>
+    <div><label>Auto-terminate</label>
+      <select id="autoTerm"><option value="false">off</option><option value="true">on</option></select></div>
+  </div>
+  <button onclick="createJob()">Create job + description + policy</button>
+  <pre id="out-job">—</pre>
+</section>
+
+<!-- ───────────────────────── candidate ───────────────────────── -->
+<section>
+  <h2>3 · Invite a candidate</h2>
+  <div class="row">
+    <div><label>Candidate name</label><input id="candName" value="Ada Lovelace"></div>
+    <div><label>Candidate email</label><input id="candEmail"></div>
+  </div>
+  <button onclick="invite()">Create invite</button>
+  <button class="ghost" onclick="redeem()">Redeem (become the candidate)</button>
+  <div class="hint">No SMTP configured? The invite link is logged by the API and shown below.</div>
+  <pre id="out-invite">—</pre>
+</section>
+
+<section>
+  <h2>4 · Resume upload <span class="pill">candidate</span></h2>
+  <label>Resume PDF</label><input id="resumeFile" type="file" accept="application/pdf">
+  <button onclick="uploadResume()">Presign → upload → complete</button>
+  <button class="ghost" onclick="pollResume()">Check parse status</button>
+  <div class="hint">Needs a candidate token — panel 3, <b>Redeem</b>. It lasts 10 minutes and is
+     renewed automatically from the invite when it lapses. Presigned PUT goes straight to MinIO;
+     parsing and embedding happen in the worker.</div>
+  <pre id="out-resume">—</pre>
+</section>
+
+<section>
+  <h2>5 · Question plan &amp; rubric</h2>
+  <button onclick="genPlan()">Generate (Nemotron)</button>
+  <button class="ghost" onclick="pollPlan()">Refresh</button>
+  <button class="ghost" onclick="approvePlan()">Approve</button>
+  <div class="hint">Takes 15–40s. Weights must sum to exactly 1.0.</div>
+  <pre id="out-plan">—</pre>
+</section>
+
+<!-- ───────────────────────── the interview ───────────────────────── -->
+<section>
+  <h2>6 · Live interview <span class="pill">candidate</span></h2>
+  <button onclick="joinVoice()">Join with microphone</button>
+  <button class="ghost" onclick="leaveVoice()">Hang up</button>
+  <span id="voiceState" class="pill">idle</span>
+  <div class="hint">Grants mic access, sends an SDP offer, plays the interviewer's audio.
+     Needs <code>pip install -e '.[voice]'</code> and a reachable NVIDIA endpoint.</div>
+  <audio id="remoteAudio" autoplay></audio>
+  <pre id="out-voice">—</pre>
+</section>
+
+<section>
+  <h2>7 · Proctoring socket <span class="pill">candidate</span></h2>
+  <button onclick="openProctorWS()">Connect</button>
+  <button class="ghost" onclick="closeProctorWS()">Disconnect</button>
+  <span id="wsState" class="pill">closed</span>
+  <div class="row">
+    <button class="ghost" onclick="sendEvent('TAB_BLUR')">TAB_BLUR</button>
+    <button class="ghost" onclick="sendEvent('TAB_FOCUS')">TAB_FOCUS</button>
+    <button class="ghost" onclick="sendEvent('PASTE')">PASTE</button>
+    <button class="ghost" onclick="sendEvent('SECOND_SPEAKER')">SECOND_SPEAKER (forged)</button>
+  </div>
+  <div class="hint">Real tab-blur is auto-reported while connected. SECOND_SPEAKER is
+     server-derived — the socket should reject it and stay open.</div>
+  <pre id="out-ws">—</pre>
+</section>
+
+<!-- ───────────────────────── results ───────────────────────── -->
+<section>
+  <h2>8 · End the interview</h2>
+  <button onclick="terminate()">Terminate (recruiter)</button>
+  <div class="hint">Terminating fires the post-interview chain: transcript pass →
+     signals + frames → scoring → verdict → both reports.</div>
+  <pre id="out-end">—</pre>
+</section>
+
+<section>
+  <h2>9 · Results</h2>
+  <button onclick="pollScore()">Score</button>
+  <button class="ghost" onclick="pollProctoring()">Proctoring</button>
+  <button class="ghost" onclick="pollReport()">Recruiter report</button>
+  <button class="ghost" onclick="pollFeedback()">Candidate feedback</button>
+  <div class="hint">The candidate feedback must contain no score, band or recommendation.</div>
+  <pre id="out-results">—</pre>
+</section>
+
+</main>
+
+<script>
+const API = location.origin + "/api/v1";
+const S = { access:null, refresh:null, interviewToken:null, tokenExpiresAt:0, orgId:null,
+            jobId:null, interviewId:null, inviteToken:null, resumeId:null, planVersion:null,
+            pc:null, ws:null };
+
+const $ = id => document.getElementById(id);
+const rnd = () => Math.random().toString(36).slice(2, 8);
+function show(id, v){ $(id).textContent = typeof v === "string" ? v : JSON.stringify(v, null, 2); }
+function append(id, line){ $(id).textContent = (line + "\n" + $(id).textContent).slice(0, 6000); }
+
+$("slug").value = "demo" + rnd();
+$("email").value = "admin@" + $("slug").value + ".example.com";
+$("candEmail").value = "ada" + rnd() + "@example.com";
+$("slug").addEventListener("input", () => $("email").value = "admin@" + $("slug").value + ".example.com");
+
+function hdrs(tok){ return tok ? {"Authorization":"Bearer "+tok, "Content-Type":"application/json"}
+                               : {"Content-Type":"application/json"}; }
+
+async function call(method, path, {body, token, raw} = {}){
+  const r = await fetch((raw ? "" : API) + path, {
+    method, headers: hdrs(token), body: body ? JSON.stringify(body) : undefined
+  });
+  let data; const text = await r.text();
+  try { data = JSON.parse(text); } catch { data = text; }
+  if (!r.ok) throw Object.assign(new Error(`${r.status} ${path}`), {status:r.status, data});
+  return data;
+}
+const err = e => e.data ? {status:e.status, ...(typeof e.data==="object"?e.data:{body:e.data})} : String(e);
+
+// ── status pills ──────────────────────────────────────────────────
+async function pollHealth(){
+  try { await fetch("/health").then(r=>r.json());
+        $("health").textContent = "health ok"; $("health").className = "pill on"; }
+  catch { $("health").textContent = "health down"; $("health").className = "pill off"; }
+  try { const r = await fetch("/ready"); const j = await r.json();
+        $("ready").textContent = "ready: " + j.status;
+        $("ready").className = "pill " + (r.ok ? "on" : "off"); }
+  catch { $("ready").textContent = "ready down"; $("ready").className = "pill off"; }
+}
+pollHealth(); setInterval(pollHealth, 10000);
+
+// ── 1. recruiter ──────────────────────────────────────────────────
+async function registerOrg(){
+  try {
+    const d = await call("POST", "/auth/register-org", {body:{
+      org_name: $("slug").value, slug: $("slug").value,
+      admin_email: $("email").value, admin_password: $("pw").value }});
+    S.access = d.tokens.access_token; S.refresh = d.tokens.refresh_token; S.orgId = d.org_id;
+    $("who").textContent = "admin · " + $("slug").value; $("who").className = "pill on";
+    show("out-auth", {org_id:d.org_id, user_id:d.user_id, note:"signed in"});
+  } catch(e){ show("out-auth", err(e)); }
+}
+async function login(){
+  try {
+    const d = await call("POST", "/auth/login", {body:{email:$("email").value, password:$("pw").value}});
+    S.access = d.access_token; S.refresh = d.refresh_token;
+    const me = await call("GET", "/auth/me", {token:S.access});
+    S.orgId = me.org_id;
+    $("who").textContent = me.role.toLowerCase() + " · " + $("slug").value; $("who").className = "pill on";
+    show("out-auth", me);
+  } catch(e){ show("out-auth", err(e)); }
+}
+
+// ── 2. job ────────────────────────────────────────────────────────
+async function createJob(){
+  try {
+    const job = await call("POST","/jobs",{token:S.access, body:{title:$("jobTitle").value}});
+    S.jobId = job.id;
+    const jd = await call("POST",`/jobs/${job.id}/descriptions`,{token:S.access, body:{content:$("jd").value}});
+    const pol = await call("PUT",`/jobs/${job.id}/proctoring-policy`,{token:S.access, body:{
+      blur_limit: Number($("blurLimit").value),
+      auto_terminate: $("autoTerm").value === "true",
+      fullscreen_required: false }});
+    show("out-job", {job_id:job.id, description_version:jd.version, policy:pol});
+  } catch(e){ show("out-job", err(e)); }
+}
+
+// ── 3. invite ─────────────────────────────────────────────────────
+async function invite(){
+  try {
+    const d = await call("POST","/auth/invites",{token:S.access, body:{
+      candidate_email:$("candEmail").value, candidate_name:$("candName").value,
+      job_id:S.jobId, max_redemptions:10 }});
+    S.interviewId = d.interview_id; S.inviteToken = d.invite_token;
+    show("out-invite", {interview_id:d.interview_id, candidate_id:d.candidate_id,
+                        expires_at:d.expires_at,
+                        link: location.origin.replace(/:\d+$/, ":3000") + "/interview?token=" + d.invite_token});
+  } catch(e){ show("out-invite", err(e)); }
+}
+async function redeem(){
+  try {
+    S.interviewToken = null;                       // force a fresh redeem
+    const tok = await candidateToken();
+    const mine = await call("GET","/interviews/me",{token:tok});
+    show("out-invite", {redeemed:true,
+                        expires_in: Math.round((S.tokenExpiresAt - Date.now())/1000),
+                        interview:mine});
+  } catch(e){ show("out-invite", err(e)); }
+}
+
+
+// ── the candidate token: short-lived, and auto-renewed ────────────
+// It is valid for ten minutes. Picking a file, reading a panel, or
+// answering the phone is enough to outlive it -- and the bare 401 that
+// follows says "Authentication required", which reads like a bug rather
+// than an expiry. Every candidate action goes through here instead.
+async function candidateToken(){
+  if (!S.inviteToken){
+    throw new Error("No invite yet — run panel 3: Create invite, then Redeem.");
+  }
+  const fresh = S.interviewToken && Date.now() < S.tokenExpiresAt - 5000;
+  if (fresh) return S.interviewToken;
+
+  // The invite is multi-use by design, precisely so a candidate whose
+  // browser died can rejoin. Re-redeeming is what their client would do.
+  const d = await call("POST","/auth/invites/redeem",{body:{invite_token:S.inviteToken}});
+  S.interviewToken = d.interview_token;
+  S.interviewId = d.interview_id;
+  S.tokenExpiresAt = Date.now() + d.expires_in * 1000;
+  tickCandidatePill();
+  return S.interviewToken;
+}
+
+function tickCandidatePill(){
+  const el = $("cand");
+  if (!S.interviewToken){ el.textContent = "no candidate token"; el.className = "pill"; return; }
+  const left = Math.round((S.tokenExpiresAt - Date.now())/1000);
+  if (left <= 0){ el.textContent = "candidate token expired"; el.className = "pill off"; return; }
+  el.textContent = `candidate token · ${Math.floor(left/60)}m${String(left%60).padStart(2,"0")}s`;
+  el.className = "pill " + (left < 60 ? "warn" : "on");
+}
+setInterval(tickCandidatePill, 1000);
+
+// ── 4. resume ─────────────────────────────────────────────────────
+async function uploadResume(){
+  const f = $("resumeFile").files[0];
+  if (!f) return show("out-resume", "choose a PDF first");
+  try {
+    const tok = await candidateToken();
+    const pre = await call("POST","/candidates/me/resume/presign",{token:tok,
+      body:{filename:f.name, content_type:"application/pdf"}});
+    S.resumeId = pre.resume_id;
+    const put = await fetch(pre.upload_url, {method:"PUT", body:f,
+      headers:{"Content-Type":"application/pdf"}});
+    if (!put.ok) return show("out-resume", {stage:"s3 PUT", status:put.status, body:await put.text()});
+    const done = await call("POST",`/candidates/me/resume/${pre.resume_id}/complete`,{token:tok});
+    show("out-resume", {uploaded:true, status:done.status, note:"worker is parsing; press Check"});
+  } catch(e){ show("out-resume", err(e)); }
+}
+async function pollResume(){
+  try {
+    const d = await call("GET","/candidates/me/resume",{token:await candidateToken()});
+    const list = Array.isArray(d) ? d : (d.items || []);
+    show("out-resume", list.map(r => ({id:r.id, status:r.status, filename:r.filename, error:r.error})));
+  } catch(e){ show("out-resume", err(e)); }
+}
+
+// ── 5. plan ───────────────────────────────────────────────────────
+async function genPlan(){
+  try { show("out-plan", await call("POST",`/interviews/${S.interviewId}/plan/generate`,
+                                    {token:S.access, body:{}})); }
+  catch(e){ show("out-plan", err(e)); }
+}
+async function pollPlan(){
+  try {
+    const p = await call("GET",`/interviews/${S.interviewId}/plan`,{token:S.access});
+    S.planVersion = p.version;
+    const total = p.criteria.reduce((a,c) => a + Number(c.weight), 0);
+    show("out-plan", {status:p.status, generation_status:p.generation_status, version:p.version,
+      // Surfaced because "are the questions actually based on the CV?" is the
+      // first thing anyone asks, and null here is the answer.
+      resume_id:p.resume_id, approved_at:p.approved_at,
+      error:p.error, weight_sum:total.toFixed(4),
+      criteria:p.criteria.map(c => `${c.name} (${c.weight})`),
+      questions:p.questions.map(q => `#${q.ordinal} [${q.competency||"-"}] ${q.body}`)});
+  } catch(e){ show("out-plan", err(e)); }
+}
+async function approvePlan(){
+  try { const d = await call("POST",`/interviews/${S.interviewId}/plan/approve`,
+          {token:S.access, body:{expected_version:S.planVersion}});
+        show("out-plan", {approved:true, status:d.status}); }
+  catch(e){ show("out-plan", err(e)); }
+}
+
+// ── 6. voice ──────────────────────────────────────────────────────
+async function joinVoice(){
+  try {
+    $("voiceState").textContent = "requesting mic"; $("voiceState").className = "pill";
+    const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    const pc = new RTCPeerConnection({iceServers:[{urls:"stun:stun.l.google.com:19302"}]});
+    S.pc = pc;
+    stream.getTracks().forEach(t => pc.addTrack(t, stream));
+    pc.addTransceiver("audio", {direction:"recvonly"});
+    pc.ontrack = e => { $("remoteAudio").srcObject = e.streams[0]; };
+    pc.onconnectionstatechange = () => {
+      $("voiceState").textContent = pc.connectionState;
+      $("voiceState").className = "pill " + (pc.connectionState === "connected" ? "on" :
+                                             pc.connectionState === "failed" ? "off" : "");
+      append("out-voice", "pc: " + pc.connectionState);
+    };
+
+    await pc.setLocalDescription(await pc.createOffer());
+    // Wait for ICE gathering: the server has no trickle channel, so the offer
+    // must already carry its candidates.
+    await new Promise(res => {
+      if (pc.iceGatheringState === "complete") return res();
+      pc.onicegatheringstatechange = () => pc.iceGatheringState === "complete" && res();
+      setTimeout(res, 3000);
+    });
+
+    const ans = await call("POST","/webrtc/offer",{token:await candidateToken(),
+      body:{sdp:pc.localDescription.sdp, type:pc.localDescription.type}});
+    await pc.setRemoteDescription({sdp:ans.sdp, type:ans.type});
+    append("out-voice", "answer received, pc_id=" + ans.pc_id);
+  } catch(e){
+    $("voiceState").textContent = "error"; $("voiceState").className = "pill off";
+    show("out-voice", err(e));
+  }
+}
+function leaveVoice(){
+  if (S.pc){ S.pc.close(); S.pc = null; }
+  $("voiceState").textContent = "idle"; $("voiceState").className = "pill";
+  append("out-voice", "hung up");
+}
+
+// ── 7. proctoring ─────────────────────────────────────────────────
+async function openProctorWS(){
+  let tok;
+  try { tok = await candidateToken(); }
+  catch(e){ return show("out-ws", String(e.message || e)); }
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/api/v1/proctoring/ws?token=${tok}`);
+  S.ws = ws;
+  ws.onopen    = () => { $("wsState").textContent = "open"; $("wsState").className = "pill on";
+                         append("out-ws","connected"); };
+  ws.onmessage = e => append("out-ws", "ack " + e.data);
+  ws.onclose   = e => { $("wsState").textContent = "closed " + e.code; $("wsState").className = "pill off";
+                        append("out-ws","closed code=" + e.code); };
+  ws.onerror   = () => append("out-ws","socket error");
+}
+function closeProctorWS(){ S.ws && S.ws.close(); }
+function sendEvent(type){
+  if (!S.ws || S.ws.readyState !== 1) return append("out-ws","socket not open");
+  S.ws.send(JSON.stringify({type, offset_ms: Math.round(performance.now())}));
+  append("out-ws", "sent " + type);
+}
+// Real browser signals, reported the way the production client would.
+window.addEventListener("blur",  () => S.ws?.readyState === 1 && sendEvent("TAB_BLUR"));
+window.addEventListener("focus", () => S.ws?.readyState === 1 && sendEvent("TAB_FOCUS"));
+document.addEventListener("paste", () => S.ws?.readyState === 1 && sendEvent("PASTE"));
+
+// ── 8/9. end + results ────────────────────────────────────────────
+async function terminate(){
+  try { show("out-end", await call("POST",`/interviews/${S.interviewId}/terminate`,
+              {token:S.access, body:{}})); }
+  catch(e){ show("out-end", err(e)); }
+}
+async function pollScore(){
+  try {
+    const s = await call("GET",`/interviews/${S.interviewId}/score`,{token:S.access});
+    show("out-results", {status:s.status, overall:s.overall, recommendation:s.recommendation,
+      scored_by:s.scored_by, error:s.error, signals:s.confidence_signals,
+      criteria:s.criteria.map(c => ({name:c.name, weight:c.weight, score:c.score,
+        rationale:(c.rationale||"").slice(0,160),
+        evidence:c.evidence.map(e => `"${e.quote.slice(0,70)}" @${e.offset_ms}ms`)}))});
+  } catch(e){ show("out-results", err(e)); }
+}
+async function pollProctoring(){
+  try { const p = await call("GET",`/interviews/${S.interviewId}/proctoring`,{token:S.access});
+        show("out-results", {verdict:p.verdict,
+          events:p.events.map(e => `${e.event_type} ${e.severity} @${e.offset_ms}`)}); }
+  catch(e){ show("out-results", err(e)); }
+}
+async function pollReport(){
+  try {
+    const r = await call("GET",`/interviews/${S.interviewId}/report`,{token:S.access});
+    let link = null;
+    if (r.status === "READY"){
+      link = (await call("GET",`/interviews/${S.interviewId}/report/download`,{token:S.access})).download_url;
+      window.open(link, "_blank");
+    }
+    show("out-results", {report:r, opened:link});
+  } catch(e){ show("out-results", err(e)); }
+}
+async function pollFeedback(){
+  try {
+    const f = await call("GET","/reports/me",{token:await candidateToken()});
+    const raw = JSON.stringify(f).toLowerCase();
+    const leaks = ["score","overall","recommendation","verdict","rubric"].filter(w => raw.includes(w));
+    if (f.status === "READY"){
+      const d = await call("GET","/reports/me/download",{token:await candidateToken()});
+      window.open(d.download_url, "_blank");
+    }
+    show("out-results", {feedback:f, leak_check: leaks.length ? "LEAKED: "+leaks : "clean — no score fields"});
+  } catch(e){ show("out-results", err(e)); }
+}
+
+// ── run everything up to the live call ────────────────────────────
+async function runAll(){
+  await registerOrg(); await createJob(); await invite(); await redeem();
+  await genPlan();
+  show("out-plan", "generating… press Refresh in ~30s");
+  await openProctorWS();
+  setTimeout(() => sendEvent("TAB_BLUR"), 800);
+  setTimeout(() => sendEvent("TAB_BLUR"), 1200);
+  setTimeout(() => sendEvent("SECOND_SPEAKER"), 1600);
+}
+</script>
+</body>
+</html>

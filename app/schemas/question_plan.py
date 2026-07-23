@@ -47,6 +47,9 @@ class QuestionPlanRead(BaseModel):
     generation_status: PlanGenerationStatus
     version: int
     generated_by: str | None = None
+    # None means no recruiter ever signed this off. Survives freezing, which
+    # overwrites ``status``; see QuestionPlan.approved_at.
+    approved_at: datetime | None = None
     error: str | None = None
     created_at: datetime
     updated_at: datetime

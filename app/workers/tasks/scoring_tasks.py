@@ -156,13 +156,25 @@ async def _score(org_id: uuid.UUID, interview_id: uuid.UUID) -> dict:
     # than skipped. A recruiter opening the report needs to see that the
     # interview produced no usable audio -- an absent score row looks like a job
     # that has not run yet.
-    if any(t.content.strip() for t in turns):
+    # Whether the CANDIDATE said anything, not whether a transcript exists --
+    # the interviewer's own questions are always there. This is what separates
+    # "their audio failed" from "they joined and answered nothing", and the two
+    # must not be reported the same way.
+    from app.models.interview import Speaker
+
+    participated = any(
+        t.content.strip() for t in turns if t.speaker is Speaker.CANDIDATE
+    )
+
+    if participated:
         results, model_name = await rubric_scorer.score_all(criteria, turns)
-        outcome = aggregator.aggregate(scoring_service.weights_and_scores(results))
+        outcome = aggregator.aggregate(
+            scoring_service.weights_and_scores(results), participated=True
+        )
     else:
-        log.warning("scoring.empty_transcript", interview_id=str(interview_id))
+        log.warning("scoring.no_candidate_speech", interview_id=str(interview_id))
         results, model_name = [], ""
-        outcome = aggregator.aggregate([])
+        outcome = aggregator.aggregate([], participated=False)
 
     async with tenant_session(org_id, "system", None) as session:
         stored = await scoring_service.require_for_interview(session, interview_id)

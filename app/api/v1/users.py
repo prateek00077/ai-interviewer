@@ -11,12 +11,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, status
 
 from app.api.deps import Principal, ScopedSession, get_current_user, require_role
+from app.api.routing import CommittingRoute
 from app.models.user import UserRole
 from app.modules.users import service as users_service
 from app.schemas.common import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.user import UserCreate, UserRead, UserUpdate
 
-router = APIRouter(prefix="/users", tags=["users"])
+router = APIRouter(prefix="/users", tags=["users"], route_class=CommittingRoute)
 
 CurrentUser = Annotated[Principal, Depends(get_current_user)]
 AdminOnly = Annotated[Principal, Depends(require_role(UserRole.ADMIN))]

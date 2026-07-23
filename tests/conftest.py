@@ -27,6 +27,55 @@ from app.models.org import Organization
 from app.models.user import Candidate, User, UserRole
 
 
+@pytest.fixture(autouse=True)
+def _no_real_celery_dispatch(monkeypatch, request):
+    """Nothing in the suite may dispatch a real Celery task.
+
+    Two separate incidents motivate this, both found by running the product by
+    hand rather than by a failing test:
+
+    1. Tests that publish a genuine ``SessionEnded`` -- the point of those tests
+       -- made the handler enqueue the post-interview chain for real. The tasks
+       sat in Redis until a worker started, then failed three times each against
+       rows rolled back hours earlier, emitting
+       ``NotFoundError('Interview not found.')``.
+    2. Once ``POST /auth/invites`` began enqueueing plan generation, every test
+       that creates an invite started dispatching a job that calls the NVIDIA
+       API. Dozens of them, per run, burning quota against a metered endpoint.
+
+    Patched at ``Task.apply_async`` -- the one funnel ``delay``, ``si`` chains
+    and ``group``/``chord`` all pass through -- rather than at each call site,
+    because the next route to enqueue something will not remember to add itself
+    here.
+
+    NOT ``task_always_eager``: eager mode runs the chain inline, which means a
+    real model call and a real PDF render inside a unit test. The goal is that
+    nothing is dispatched at all.
+
+    Tests that assert on dispatch patch a narrower name themselves and win, as
+    theirs is applied later. ``test_pipeline`` is exempt: it inspects the canvas
+    without sending it, and needs the real object.
+    """
+    if "test_pipeline" in request.node.nodeid:
+        return
+
+    from celery.app.task import Task
+
+    from app.workers import pipeline
+
+    def _refuse(self, *_args, **_kwargs):  # noqa: ANN001, ANN202
+        raise AssertionError(
+            f"test dispatched Celery task {self.name!r}. Tests must not reach the "
+            "broker; patch the enqueueing function under test instead."
+        )
+
+    monkeypatch.setattr(Task, "apply_async", _refuse)
+    # A no-op rather than a raise: publishing SessionEnded is a legitimate thing
+    # for a test to do, and the handler enqueues as a side effect it does not
+    # await. Raising there would fail tests for exercising the real path.
+    monkeypatch.setattr(pipeline, "enqueue", lambda *_args, **_kwargs: None)
+
+
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def app_engine_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     """A sessionmaker over a one-connection pool, as the unprivileged app role.

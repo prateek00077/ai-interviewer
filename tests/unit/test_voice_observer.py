@@ -221,3 +221,150 @@ def test_the_prompt_excludes_protected_characteristics():
     text = _prompt().lower()
     for attribute in ("age", "race", "religion", "gender", "disability"):
         assert attribute in text, f"{attribute} is not named in the prohibition"
+
+
+# --- The bus's own failure path ---------------------------------------------
+
+
+async def test_a_failing_handler_is_logged_rather_than_crashing_the_logger():
+    """The line that reports a broken subscriber must not itself break.
+
+    OBSERVED in production logs: a handler raised, and the ``log.exception``
+    meant to report it raised ``TypeError: exception() got multiple values for
+    argument 'event'`` -- structlog takes the message as a positional named
+    ``event``, and the call passed ``event=`` as a keyword. The original error
+    vanished, and the only channel for surfacing a bad subscriber was the one
+    that was broken.
+    """
+    import uuid
+
+    import structlog.testing
+
+    from app.core.events import EventBus, SessionStarted
+
+    bus = EventBus()
+    org, interview = uuid.uuid4(), uuid.uuid4()
+
+    async def explodes(_event) -> None:
+        raise RuntimeError("subscriber is broken")
+
+    bus.subscribe(SessionStarted, explodes)
+
+    # Captured, because "drain() returned" is not an assertion: the TypeError
+    # dies inside a fire-and-forget task and is swallowed, so the test passed
+    # with the bug present. What has to be true is that the record was actually
+    # EMITTED.
+    with structlog.testing.capture_logs() as captured:
+        bus.publish(SessionStarted(org_id=org, interview_id=interview))
+        await bus.drain()
+
+    failures = [c for c in captured if c.get("event") == "event_handler_failed"]
+    assert len(failures) == 1, f"the failure was never logged: {captured}"
+    assert failures[0]["event_type"] == "SessionStarted"
+    assert "explodes" in failures[0]["handler"]
+
+
+async def test_one_broken_handler_does_not_stop_the_others():
+    import uuid
+
+    from app.core.events import EventBus, SessionStarted
+
+    bus = EventBus()
+    seen: list[str] = []
+
+    async def explodes(_event) -> None:
+        raise RuntimeError("broken")
+
+    async def works(_event) -> None:
+        seen.append("ran")
+
+    bus.subscribe(SessionStarted, explodes)
+    bus.subscribe(SessionStarted, works)
+    bus.publish(SessionStarted(org_id=uuid.uuid4(), interview_id=uuid.uuid4()))
+    await bus.drain()
+
+    assert seen == ["ran"], "a broken subscriber suppressed a working one"
+
+
+# --- One frame, many hops -----------------------------------------------------
+
+
+async def test_a_frame_seen_at_every_hop_is_recorded_once():
+    """The observer fires once per pipeline HOP, not once per frame.
+
+    A TTSTextFrame is pushed TTS -> transport.output() -> audio_buffer ->
+    assistant aggregator, so the same object arrives three times.
+
+    OBSERVED in a real interview transcript: every interviewer line stored as
+    "Hi Prateek...Hi Prateek...Hi Prateek..." -- three identical copies
+    concatenated, which is also what the scorer then read.
+    """
+    import uuid
+
+    from pipecat.frames.frames import BotStoppedSpeakingFrame, TTSTextFrame
+
+    from app.core.events import EventBus, TurnCompleted
+    from app.modules.voice.observers import TranscriptObserver
+
+    bus = EventBus()
+    seen: list[TurnCompleted] = []
+    bus.subscribe(TurnCompleted, lambda e: seen.append(e))
+
+    observer = TranscriptObserver(org_id=uuid.uuid4(), interview_id=uuid.uuid4())
+
+    import app.modules.voice.observers as observers_module
+
+    original = observers_module.publish
+    observers_module.publish = bus.publish
+    try:
+        frame = TTSTextFrame(text="Hello Prateek.", aggregated_by="sentence")
+        # The same object, pushed at three different links.
+        for _ in range(3):
+            await observer.on_push_frame(_pushed(frame))
+        await observer.on_push_frame(_pushed(BotStoppedSpeakingFrame()))
+    finally:
+        observers_module.publish = original
+
+    await bus.drain()
+    assert len(seen) == 1
+    assert seen[0].content == "Hello Prateek.", f"text was repeated: {seen[0].content!r}"
+
+
+async def test_distinct_frames_are_all_recorded():
+    """The dedupe must not swallow genuinely different fragments."""
+    import uuid
+
+    from pipecat.frames.frames import BotStoppedSpeakingFrame, TTSTextFrame
+
+    from app.core.events import EventBus, TurnCompleted
+    from app.modules.voice.observers import TranscriptObserver
+
+    bus = EventBus()
+    seen: list[TurnCompleted] = []
+    bus.subscribe(TurnCompleted, lambda e: seen.append(e))
+
+    observer = TranscriptObserver(org_id=uuid.uuid4(), interview_id=uuid.uuid4())
+
+    import app.modules.voice.observers as observers_module
+
+    original = observers_module.publish
+    observers_module.publish = bus.publish
+    try:
+        for text in ("Hello. ", "Tell me about sharding. "):
+            await observer.on_push_frame(
+                _pushed(TTSTextFrame(text=text, aggregated_by="sentence"))
+            )
+        await observer.on_push_frame(_pushed(BotStoppedSpeakingFrame()))
+    finally:
+        observers_module.publish = original
+
+    await bus.drain()
+    assert len(seen) == 1
+    assert seen[0].content == "Hello. Tell me about sharding."
+
+
+def _pushed(frame):
+    """Minimal stand-in for pipecat's FramePushed."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(frame=frame, source=None, destination=None, direction=None)

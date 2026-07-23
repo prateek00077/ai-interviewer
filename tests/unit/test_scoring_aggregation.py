@@ -139,3 +139,59 @@ def test_a_perfect_score_cannot_exceed_the_band_ceiling():
     outcome = aggregate([(third, D("5")), (third, D("5")), (third, D("5"))])
     assert outcome.overall == D("5.00")
     assert outcome.recommendation is Recommendation.STRONG_HIRE
+
+
+# --- Joined and said nothing vs never heard ---------------------------------
+
+
+def test_a_candidate_who_spoke_but_evidenced_nothing_gets_the_floor_not_null():
+    """The complaint that motivated this.
+
+    Someone joined, was asked six questions, and answered "I don't remember",
+    "can we move on", "yes". Reporting that as INSUFFICIENT_EVIDENCE with no
+    number told a recruiter nothing about an interview that had happened, and
+    filed a non-answer under the same heading as a failed microphone.
+    """
+    outcome = aggregate(_even(None, None, None, None), participated=True)
+    assert outcome.overall == Decimal("1")
+    assert outcome.recommendation is Recommendation.NO_HIRE
+    assert outcome.is_assessed is True
+
+
+def test_a_candidate_who_never_spoke_is_still_insufficient_evidence():
+    """The other half. Their audio failed; nobody assessed them."""
+    outcome = aggregate(_even(None, None, None, None), participated=False)
+    assert outcome.overall is None
+    assert outcome.recommendation is Recommendation.INSUFFICIENT_EVIDENCE
+
+
+def test_participation_does_not_inflate_a_partially_graded_rubric():
+    """Flooring applies only when NOTHING could be graded. Where some criteria
+    were evidenced, the renormalised mean still governs."""
+    outcome = aggregate(
+        [(D("0.5"), D("4")), (D("0.5"), None)], participated=True
+    )
+    assert outcome.overall == D("4.00")
+    assert outcome.recommendation is Recommendation.HIRE
+
+
+def test_low_coverage_still_reports_a_number_when_they_participated():
+    """A candidate who engaged deserves the finding, even from one criterion.
+    Withholding it entirely is what produced the all-null report."""
+    outcome = aggregate([(D("0.2"), D("2")), *[(D("0.16"), None)] * 5], participated=True)
+    assert outcome.overall is not None
+    assert outcome.coverage < MIN_COVERAGE
+
+
+def test_low_coverage_without_participation_still_withholds():
+    outcome = aggregate([(D("0.2"), D("5")), *[(D("0.16"), None)] * 5], participated=False)
+    assert outcome.overall is None
+    assert outcome.recommendation is Recommendation.INSUFFICIENT_EVIDENCE
+
+
+def test_an_empty_rubric_is_never_a_hire_recommendation():
+    """No criteria at all means nothing to score against, participation or not."""
+    for participated in (True, False):
+        outcome = aggregate([], participated=participated)
+        assert outcome.recommendation is Recommendation.INSUFFICIENT_EVIDENCE
+        assert outcome.overall is None

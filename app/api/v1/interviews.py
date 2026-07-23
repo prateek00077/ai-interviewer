@@ -21,6 +21,7 @@ from app.api.deps import (
     get_current_candidate,
     require_role,
 )
+from app.api.routing import CommittingRoute
 from app.core.exceptions import NotFoundError
 from app.models.interview import InterviewStatus
 from app.models.user import UserRole
@@ -37,7 +38,7 @@ from app.schemas.interview import (
     TurnRead,
 )
 
-router = APIRouter(prefix="/interviews", tags=["interviews"])
+router = APIRouter(prefix="/interviews", tags=["interviews"], route_class=CommittingRoute)
 
 Recruiter = Annotated[Principal, Depends(require_role(UserRole.ADMIN, UserRole.RECRUITER))]
 CurrentCandidate = Annotated[Principal, Depends(get_current_candidate)]

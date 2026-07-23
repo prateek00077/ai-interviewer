@@ -40,10 +40,25 @@ class Settings(BaseSettings):
     invite_max_redemptions: int = 3
 
     # --- Rate limiting ---
+    #
+    # These are the PRODUCTION numbers. ``_relax_rate_limits_in_development``
+    # below raises them for local work unless you set them yourself: five
+    # registrations an hour is correct for a public endpoint and makes the
+    # product untestable on a laptop, where every run of the walkthrough needs a
+    # fresh tenant.
+    #
+    # Raised, not disabled. A limiter that does not exist in development is one
+    # nobody notices is broken until production, and the 429 path -- the header,
+    # the error shape, the retry_after -- should still be reachable by hammering.
     login_max_attempts: int = 10
     login_attempt_window_seconds: int = 900
     register_max_attempts: int = 5
     register_attempt_window_seconds: int = 3600
+
+    # What development gets instead. Generous enough that ordinary manual
+    # testing never trips it, low enough that a runaway loop still does.
+    dev_login_max_attempts: int = 1_000
+    dev_register_max_attempts: int = 500
 
     # --- Database ---
     # The app connects as an unprivileged role so RLS actually applies to it.
@@ -59,9 +74,27 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # --- Interview ---
-    # Silence before a candidate's turn is considered finished. Short by
-    # design -- the ASR's own end-of-utterance logic runs alongside it.
-    vad_stop_secs: float = 0.2
+    # How long the candidate must be silent before their turn is considered
+    # over. MEASURED AS TOO SHORT AT 0.2: someone thinking mid-answer -- "we
+    # sharded on... tenant id" -- had the pause read as the end of their turn,
+    # so the ASR emitted a fragment and the interviewer replied to half a
+    # sentence. An interview is not a chat assistant; people pause to think, and
+    # the cost of waiting an extra half second is a beat of dead air, while the
+    # cost of cutting in is the answer.
+    vad_stop_secs: float = 0.8
+    # Below this a frame is silence regardless of Silero's confidence. Lowered
+    # from pipecat's 0.6 default because a softly-spoken candidate on a laptop
+    # microphone was being treated as background noise.
+    vad_min_volume: float = 0.4
+
+    # --- Idle handling ---
+    # Silence long enough that the candidate has probably lost audio, walked
+    # away, or is waiting for a prompt they will never get. The interviewer
+    # checks in rather than sitting mute.
+    voice_idle_nudge_secs: float = 25.0
+    # How many times to check in before concluding nobody is there. Two nudges
+    # then end: a third would be badgering someone who has clearly gone.
+    voice_max_idle_nudges: int = 2
     # Magpie's cold start is real (687ms measured). Session start waits for a
     # warm TTS rather than opening with dead air.
     connect_prewarm_timeout_secs: float = 45.0
@@ -136,6 +169,28 @@ class Settings(BaseSettings):
     # comes back to it. Still bounded, because the URL is a bearer credential
     # for a document containing an assessment of a named person.
     report_download_ttl_secs: int = 3600
+
+    @model_validator(mode="after")
+    def _relax_rate_limits_in_development(self) -> "Settings":
+        """Raise the auth limits for local work, unless they were set explicitly.
+
+        ``model_fields_set`` is what makes this safe: it holds only the fields
+        that actually came from the environment or the constructor, so anyone
+        who sets REGISTER_MAX_ATTEMPTS keeps their value -- including someone
+        setting it low on purpose to exercise the 429 path.
+
+        Development only. Staging and production keep the real numbers, because
+        a limit that quietly evaporates on the way to production is worse than
+        no limit at all: you would ship believing you had one.
+        """
+        if self.environment != "development":
+            return self
+
+        if "register_max_attempts" not in self.model_fields_set:
+            self.register_max_attempts = self.dev_register_max_attempts
+        if "login_max_attempts" not in self.model_fields_set:
+            self.login_max_attempts = self.dev_login_max_attempts
+        return self
 
     @field_validator("cors_origins", "webrtc_stun_urls", mode="before")
     @classmethod

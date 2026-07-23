@@ -11,7 +11,7 @@ from decimal import Decimal
 import pytest
 
 from app.db.session import tenant_session
-from app.models.question_plan import PlanStatus, QuestionPlan, RubricCriterion
+from app.models.question_plan import PlanStatus, RubricCriterion
 from app.models.score import Recommendation, ScoringStatus
 from app.modules.interview import service as interview_service
 from app.modules.interview import transcript
@@ -57,10 +57,20 @@ async def invited(api_client, registered_org):
 
 
 async def _seed_rubric(org_id: uuid.UUID, interview_id: uuid.UUID) -> list[uuid.UUID]:
-    """A frozen two-criterion rubric, as an interview in progress would have."""
+    """A frozen two-criterion rubric, as an interview in progress would have.
+
+    ``ensure_plan`` rather than a bare INSERT: creating an invite now opens the
+    plan row and enqueues generation, so an interview always has exactly one
+    plan by the time a test gets here. Inserting a second is a unique violation
+    on ``uq_question_plans_interview_id``.
+    """
+    from app.modules.question_plan import service as plan_service
+
     async with tenant_session(org_id, "system", None) as session:
-        plan = QuestionPlan(org_id=org_id, interview_id=interview_id, status=PlanStatus.FROZEN)
-        session.add(plan)
+        plan = await plan_service.ensure_plan(
+            session, org_id=org_id, interview_id=interview_id
+        )
+        plan.status = PlanStatus.FROZEN
         await session.flush()
         for ordinal, (name, weight) in enumerate(
             [("System Design", D("0.6")), ("Communication", D("0.4"))]

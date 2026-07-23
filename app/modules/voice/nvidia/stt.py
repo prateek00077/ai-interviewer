@@ -30,9 +30,20 @@ log = structlog.get_logger(__name__)
 # Riva wants 16k mono PCM. Resampling happens in the transport, not here.
 SAMPLE_RATE = 16_000
 
-# ASR frames of trailing silence before end-of-utterance is declared. Part of
-# the turn budget: too low and the interviewer talks over a candidate who paused
-# to think, too high and every turn carries dead air.
+# Riva VAD stop history, in FRAMES -- not milliseconds. 320 is pipecat's
+# default and Riva's, and at roughly 10ms per frame it is about three seconds of
+# trailing silence, already far more patient than the Silero VAD in front of it.
+#
+# I briefly raised this to 800 "to match the VAD at 0.8s", having misread the
+# unit. That is not a small error: it more than doubled an already-long window,
+# and the ASR stopped emitting final transcriptions altogether -- the candidate
+# spoke four times, the turn aggregator opened and closed each time with nothing
+# to send, and the interviewer sat mute because it had never heard a word. The
+# unit is documented in pipecat's own signature ("VAD stop history in frames");
+# I did not check it.
+#
+# Leave this alone. Tune end-of-turn with VAD_STOP_SECS, which is in seconds and
+# is the setting that actually governs when the candidate's turn ends.
 STOP_HISTORY_FRAMES = 320
 
 # One candidate. Anything beyond that is the proctoring signal, not a

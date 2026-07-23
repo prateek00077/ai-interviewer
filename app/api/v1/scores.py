@@ -18,6 +18,7 @@ import structlog
 from fastapi import APIRouter, Depends, status
 
 from app.api.deps import Principal, ScopedSession, require_role
+from app.api.routing import CommittingRoute
 from app.core.exceptions import ConflictError
 from app.models.user import UserRole
 from app.modules.interview import service as interview_service
@@ -27,7 +28,7 @@ from app.schemas.score import ScoreRead
 
 log = structlog.get_logger(__name__)
 
-router = APIRouter(tags=["scoring"])
+router = APIRouter(tags=["scoring"], route_class=CommittingRoute)
 
 Recruiter = Annotated[Principal, Depends(require_role(UserRole.ADMIN, UserRole.RECRUITER))]
 

@@ -7,6 +7,7 @@ lives in ``app.modules.auth`` where it can be tested without HTTP.
 
 from typing import Annotated
 
+import structlog
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +21,7 @@ from app.api.deps import (
     register_rate_limit,
     require_role,
 )
+from app.api.routing import CommittingRoute
 from app.core.config import settings
 from app.core.exceptions import NotFoundError
 from app.integrations import email
@@ -28,6 +30,7 @@ from app.modules.auth import invites as invite_service
 from app.modules.auth import service as auth_service
 from app.modules.auth.tokens import RefreshTokenStore
 from app.modules.jobs import service as jobs_service
+from app.modules.question_plan import service as plan_service
 from app.schemas.auth import (
     CreateInviteRequest,
     InterviewTokenResponse,
@@ -41,8 +44,11 @@ from app.schemas.auth import (
     RegisterOrgResponse,
     TokenResponse,
 )
+from app.workers.tasks.plan_tasks import generate_plan
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+log = structlog.get_logger(__name__)
+
+router = APIRouter(prefix="/auth", tags=["auth"], route_class=CommittingRoute)
 
 Store = Annotated[RefreshTokenStore, Depends(get_token_store)]
 UnscopedDb = Annotated[AsyncSession, Depends(get_unscoped_db)]
@@ -149,6 +155,30 @@ async def create_invite(
         job_id=payload.job_id,
         max_redemptions=payload.max_redemptions,
     )
+
+    # Plan generation starts here, at invite time, rather than waiting for the
+    # recruiter to ask. A candidate can redeem the link within seconds, and
+    # generation takes tens of seconds against the model -- so deferring it to
+    # an explicit click is how someone ends up interviewed with no plan at all,
+    # improvising from the job description.
+    #
+    # The row is created and committed before the task is sent, so the worker
+    # cannot read a plan this request has not written yet. Enqueueing never
+    # fails the invite: the plan is regenerable from /plan/generate, the invite
+    # is not re-issuable without confusing the candidate.
+    plan = await plan_service.ensure_plan(
+        db, org_id=principal.org_id, interview_id=created.interview_id
+    )
+    await db.commit()
+    try:
+        generate_plan.delay(str(principal.org_id), str(created.interview_id))
+    except Exception:  # noqa: BLE001
+        log.warning(
+            "invite.plan_enqueue_failed",
+            interview_id=str(created.interview_id),
+            plan_id=str(plan.id),
+            exc_info=True,
+        )
 
     # After the invite is created, and never allowed to undo it. The row is the
     # work; the email is the announcement. A mail server that is down must not

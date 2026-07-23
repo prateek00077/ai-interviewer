@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 import structlog
+from pipecat.frames.frames import LLMRunFrame, TTSSpeakFrame
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from redis.asyncio import Redis
@@ -53,6 +54,9 @@ CHECKPOINT_EVERY_TURNS = 1
 # SessionEnded for it would lock them out.
 SUPERSEDED = "superseded"
 
+# How long to let the farewell play before tearing the connection down.
+_FAREWELL_GRACE_SECS = 6.0
+
 
 @dataclass
 class VoiceSession:
@@ -68,6 +72,17 @@ class VoiceSession:
     _task: asyncio.Task | None = None
     _stopped: bool = False
     _reason: str = "completed"
+    # The interviewer greets once per session. A reconnect re-fires
+    # on_client_connected, and a second greeting would have it introduce itself
+    # again in the middle of the interview.
+    _greeted: bool = False
+    # Consecutive idle check-ins with no reply. Reset is implicit: the pipeline
+    # only reports idle after a fresh stretch of silence.
+    _idle_nudges: int = 0
+    # The merged call audio, captured from the buffer's own on_audio_data event.
+    # See _capture_recording for why it cannot simply be read at shutdown.
+    _audio: bytes | None = None
+    _audio_sample_rate: int = 0
 
     @property
     def elapsed_ms(self) -> int:
@@ -161,7 +176,10 @@ async def start(
         )
 
     _sessions[interview_id] = session_obj
+    _capture_recording(session_obj)
     _wire_disconnect(session_obj)
+    _open_the_conversation(session_obj)
+    _handle_silence(session_obj)
     session_obj._task = asyncio.create_task(_run(session_obj, redis))
 
     publish(
@@ -202,6 +220,102 @@ def _wire_disconnect(session: VoiceSession) -> None:
 
     for event in ("disconnected", "closed", "failed"):
         session.connection.add_event_handler(event, _on_drop)
+
+
+# What the interviewer says into a silence, in order. Escalating, and short.
+#
+# Spoken directly rather than generated: a check-in has to arrive immediately
+# and say the same reassuring thing every time. Routing it through the LLM would
+# add a second of latency to a moment that is already awkward, and would let the
+# model improvise -- which, mid-interview, means it might restate the question
+# differently or start evaluating the silence out loud.
+IDLE_NUDGES = (
+    "Take your time. Let me know when you're ready.",
+    "Sorry, I can't hear anything. Are you still there?",
+)
+
+# Said before hanging up, so the call does not just die on the candidate.
+IDLE_FAREWELL = (
+    "I'm not able to hear you, so I'll end the interview here. "
+    "Please contact the hiring team to rearrange."
+)
+
+
+def _handle_silence(session: VoiceSession) -> None:
+    """Check in when nobody has spoken for a while, then give up gracefully.
+
+    Silence in a voice interview is ambiguous: the candidate may be thinking,
+    or their microphone may have died two minutes ago and they are waiting for
+    a question that already came. A human interviewer resolves that by asking.
+
+    Escalates rather than repeating: first a reassurance that they can take
+    their time, then an explicit "are you still there?", then an ending that
+    tells them why and what to do. Sitting mute forever is the worst option,
+    and hanging up without a word is the second worst.
+
+    The counter resets whenever anyone speaks -- ``on_idle_timeout`` only fires
+    after a fresh stretch of silence -- so a candidate who answers after a long
+    think gets the full allowance again next time.
+    """
+    task = session.built.task
+
+    @task.event_handler("on_idle_timeout")
+    async def _on_idle(_task: object) -> None:
+        if session._stopped:
+            return
+
+        if session._idle_nudges >= settings.voice_max_idle_nudges:
+            log.info(
+                "voice.idle_giving_up",
+                interview_id=str(session.interview_id),
+                nudges=session._idle_nudges,
+            )
+            await task.queue_frames([TTSSpeakFrame(IDLE_FAREWELL)])
+            # Long enough for the farewell to actually reach the candidate.
+            # Hanging up mid-sentence would undo the point of saying it.
+            await asyncio.sleep(_FAREWELL_GRACE_SECS)
+            await stop(session.interview_id, reason="abandoned")
+            return
+
+        line = IDLE_NUDGES[min(session._idle_nudges, len(IDLE_NUDGES) - 1)]
+        session._idle_nudges += 1
+        log.info(
+            "voice.idle_nudge",
+            interview_id=str(session.interview_id),
+            nudge=session._idle_nudges,
+        )
+        await task.queue_frames([TTSSpeakFrame(line)])
+
+
+def _open_the_conversation(session: VoiceSession) -> None:
+    """Make the interviewer speak first.
+
+    WITHOUT THIS THE BOT NEVER SAYS ANYTHING. A pipecat pipeline is reactive: it
+    runs LLM -> TTS in response to a transcription, so with nothing queued it
+    sits waiting for the candidate to talk. The candidate, meanwhile, is waiting
+    to be asked a question. OBSERVED end to end -- mic granted, WebRTC
+    connected, pipeline built and ready, and total silence in both directions.
+
+    An interview is not a conversation the candidate opens. The interviewer
+    greets them and asks the first question, which is also what tells the
+    candidate their microphone is working.
+
+    Hung off ``on_client_connected`` rather than queued at start-up: frames
+    pushed at a transport with no peer are discarded, and the greeting would be
+    lost exactly when it matters. The event fires once the browser's audio is
+    actually flowing.
+    """
+    transport = session.built.transport
+
+    @transport.event_handler("on_client_connected")
+    async def _greet(_transport: object, _client: object) -> None:
+        # Guarded because a reconnect fires this again, and a second greeting
+        # mid-interview would have the interviewer introduce itself twice.
+        if session._greeted:
+            return
+        session._greeted = True
+        await session.built.task.queue_frames([LLMRunFrame()])
+        log.info("voice.opening_queued", interview_id=str(session.interview_id))
 
 
 async def _run(session: VoiceSession, redis: Redis | None) -> None:
@@ -309,6 +423,39 @@ async def _finalise(session: VoiceSession, redis: Redis | None) -> None:
     )
 
 
+def _capture_recording(session: VoiceSession) -> None:
+    """Take the merged audio from the buffer while it still exists.
+
+    THE BUFFER IS EMPTY BY THE TIME SHUTDOWN READS IT. ``AudioBufferProcessor``
+    calls ``stop_recording()`` itself when an ``EndFrame`` or ``CancelFrame``
+    reaches it, and ``stop_recording`` resets every buffer. That happens during
+    pipeline teardown, which is strictly before ``_finalise`` runs -- so reading
+    ``merge_audio_buffers()`` there always found nothing, returned None, and
+    logged nothing because "no audio" is a legitimate outcome for a candidate
+    who never spoke.
+
+    OBSERVED: every interview in the database had ``recording_key = NULL``, and
+    every score carried ``speaking_seconds: 0`` with null pitch and pause
+    signals, because the offline pass and the audio analysis had no input.
+
+    ``on_audio_data`` is the intended hook: ``stop_recording`` fires it with the
+    merged audio *before* resetting. Registering it is the only way to hold on
+    to the recording.
+    """
+
+    @session.built.audio_buffer.event_handler("on_audio_data")
+    async def _on_audio(_buffer: object, audio: bytes, sample_rate: int, _channels: int) -> None:
+        if audio:
+            session._audio = audio
+            session._audio_sample_rate = sample_rate
+            log.info(
+                "voice.recording_captured",
+                interview_id=str(session.interview_id),
+                bytes=len(audio),
+                sample_rate=sample_rate,
+            )
+
+
 async def _upload_recording(session: VoiceSession) -> str | None:
     """Persist the call audio. Never raises.
 
@@ -317,17 +464,15 @@ async def _upload_recording(session: VoiceSession) -> str | None:
     but failing the session shutdown over it would be worse.
     """
     try:
-        buffer = session.built.audio_buffer
-        if not buffer.has_audio():
-            return None
-        audio = buffer.merge_audio_buffers()
+        audio = session._audio
         if not audio:
+            log.info("voice.no_recording", interview_id=str(session.interview_id))
             return None
         key = f"{session.org_id}/{session.interview_id}/{uuid.uuid4().hex}.wav"
         await storage.put_bytes(
             bucket=settings.s3_bucket_recordings,
             key=key,
-            data=_to_wav(audio),
+            data=_to_wav(audio, session._audio_sample_rate),
             content_type="audio/wav",
         )
         return key
@@ -340,8 +485,14 @@ async def _upload_recording(session: VoiceSession) -> str | None:
         return None
 
 
-def _to_wav(pcm: bytes) -> bytes:
-    """Wrap raw PCM in a WAV container so the artifact is playable as-is."""
+def _to_wav(pcm: bytes, sample_rate: int = 0) -> bytes:
+    """Wrap raw PCM in a WAV container so the artifact is playable as-is.
+
+    The rate comes from the buffer's own event rather than from our constant:
+    the processor resamples to whatever the transport negotiated, and writing
+    the wrong rate into the header makes the recording play at the wrong speed
+    -- which the offline ASR then transcribes as gibberish.
+    """
     import io
     import wave
 
@@ -349,7 +500,7 @@ def _to_wav(pcm: bytes) -> bytes:
     with wave.open(buffer, "wb") as handle:
         handle.setnchannels(pipeline_builder.RECORDING_CHANNELS)
         handle.setsampwidth(2)
-        handle.setframerate(pipeline_builder.RECORDING_SAMPLE_RATE)
+        handle.setframerate(sample_rate or pipeline_builder.RECORDING_SAMPLE_RATE)
         handle.writeframes(pcm)
     return buffer.getvalue()
 

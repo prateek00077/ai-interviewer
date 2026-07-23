@@ -25,6 +25,7 @@ from app.api.deps import (
     get_current_candidate,
     require_role,
 )
+from app.api.routing import CommittingRoute
 from app.core.config import settings
 from app.core.exceptions import NotFoundError
 from app.models.user import UserRole
@@ -41,7 +42,7 @@ from app.schemas.resume import (
 from app.schemas.user import CandidateCreate, CandidateRead, CandidateUpdate
 from app.workers.tasks.resume_tasks import process_resume
 
-router = APIRouter(prefix="/candidates", tags=["candidates"])
+router = APIRouter(prefix="/candidates", tags=["candidates"], route_class=CommittingRoute)
 
 Recruiter = Annotated[Principal, Depends(require_role(UserRole.ADMIN, UserRole.RECRUITER))]
 CurrentCandidate = Annotated[Principal, Depends(get_current_candidate)]

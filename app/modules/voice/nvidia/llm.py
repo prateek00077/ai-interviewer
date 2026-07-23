@@ -33,13 +33,13 @@ def build(spec: ServiceSpec | None = None) -> NvidiaLLMService:
         raise RuntimeError("NVIDIA_API_KEY is required to start a voice session.")
 
     params = spec.option("params", {}) or {}
-    extra_body: dict = {}
+    body: dict = {}
     if params.get("enable_thinking") is False:
-        extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+        body["chat_template_kwargs"] = {"enable_thinking": False}
     if "repetition_penalty" in params:
-        extra_body["repetition_penalty"] = params["repetition_penalty"]
+        body["repetition_penalty"] = params["repetition_penalty"]
 
-    log.info("voice.llm_configured", model=spec.model, thinking_off=bool(extra_body))
+    log.info("voice.llm_configured", model=spec.model, thinking_off=bool(body))
     return NvidiaLLMService(
         api_key=api_key,
         base_url=spec.rest_base_url,
@@ -47,6 +47,21 @@ def build(spec: ServiceSpec | None = None) -> NvidiaLLMService:
             model=spec.model,
             temperature=TEMPERATURE,
             max_tokens=MAX_TOKENS,
-            extra=extra_body,
+            # NESTED UNDER ``extra_body``, not spread alongside it.
+            #
+            # pipecat does ``params.update(settings.extra)`` and then
+            # ``client.chat.completions.create(**params)``, so anything in
+            # ``extra`` becomes a TOP-LEVEL argument to the OpenAI SDK. Neither
+            # ``chat_template_kwargs`` nor ``repetition_penalty`` is a parameter
+            # that SDK accepts, so passing them there does not reach NVIDIA --
+            # it raises before the request is built:
+            #     AsyncCompletions.create() got an unexpected keyword argument
+            #     'chat_template_kwargs'
+            #
+            # OBSERVED: every LLM call in a live interview failed on the first
+            # turn, so the interviewer greeted nobody and the call sat silent.
+            # ``extra_body`` IS an SDK parameter, and its contents are merged
+            # into the request JSON, which is where NVIDIA reads them from.
+            extra={"extra_body": body} if body else {},
         ),
     )

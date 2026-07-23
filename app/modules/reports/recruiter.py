@@ -93,6 +93,11 @@ class RecruiterView:
     proctoring_reasons: list[str] = field(default_factory=list)
     frames_analysed: int = 0
 
+    # None means the interview was conducted against a plan no human reviewed.
+    # Printed on the report, because a score is only as defensible as the rubric
+    # behind it and a recruiter should not have to go looking.
+    plan_approved_at: object = None
+
     delivery_signals: dict = field(default_factory=dict)
     turns: list = field(default_factory=list)
     has_recording: bool = False
@@ -139,6 +144,12 @@ async def build(session: AsyncSession, interview_id: uuid.UUID) -> RecruiterView
         completed_at=interview.completed_at,
         has_recording=interview.recording_key is not None,
     )
+
+    from app.modules.question_plan import service as plan_service
+
+    plan = await plan_service.get_for_interview(session, interview_id)
+    if plan is not None:
+        view.plan_approved_at = plan.approved_at
 
     score = await scoring_service.get_for_interview(session, interview_id)
     if score is not None:

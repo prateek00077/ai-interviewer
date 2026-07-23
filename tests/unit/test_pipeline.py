@@ -79,6 +79,45 @@ def test_the_two_slow_independent_steps_run_concurrently():
     assert parallel == {"scoring.measure_signals", "proctoring.analyze_frames"}
 
 
+def test_the_canvas_resolves_our_app_from_any_thread():
+    """The regression that killed the entire post-interview pipeline in prod.
+
+    Celery's ``current_app`` is a THREAD-LOCAL, and every task here is declared
+    with ``@shared_task``, which resolves through it lazily. ``enqueue`` runs
+    inside ``asyncio.to_thread`` -- apply_async does blocking socket I/O and
+    must not sit on the event loop serving live voice sessions -- so on that
+    thread ``shared_task`` fell back to Celery's built-in default app: no
+    broker, no result backend.
+
+    The symptom was silence. Chords require a backend, so the whole chain raised
+    at send time, ``enqueue`` caught it by design, and every interview completed
+    with nothing scored and no report written. One log line, no failed task, no
+    alert.
+
+    ``celery_app.set_default()`` in celery_app.py is the fix. This asserts it
+    from a thread, because from the main thread it passes either way.
+    """
+    import threading
+
+    import celery
+
+    seen: dict = {}
+
+    def _inspect() -> None:
+        seen["app"] = celery.current_app.main
+        seen["backend"] = celery.current_app.conf.result_backend
+        signatures = _signatures(pipeline.build(ORG, INTERVIEW))
+        seen["apps"] = {s.app.main for s in signatures}
+
+    thread = threading.Thread(target=_inspect)
+    thread.start()
+    thread.join()
+
+    assert seen["app"] == "ai_interviewer", "current_app fell back to Celery's default"
+    assert seen["backend"], "no result backend on this thread; chords cannot start"
+    assert seen["apps"] == {"ai_interviewer"}, seen["apps"]
+
+
 def test_enqueue_swallows_a_broker_failure(monkeypatch):
     """The interview is already over and the transcript already persisted. A
     dead broker must not crash the voice session's shutdown path."""

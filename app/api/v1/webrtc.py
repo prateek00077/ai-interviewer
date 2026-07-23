@@ -21,13 +21,14 @@ from fastapi import APIRouter, Depends, Request
 
 from app.api import ops
 from app.api.deps import Principal, ScopedSession, get_current_candidate, get_redis
+from app.api.routing import CommittingRoute
 from app.core.exceptions import ConflictError, NotFoundError
 from app.modules.interview import service as interview_service
 from app.modules.interview import state_machine
 from app.modules.voice import session_manager, transport
 from app.schemas.webrtc import WebRTCAnswer, WebRTCOffer
 
-router = APIRouter(prefix="/webrtc", tags=["webrtc"])
+router = APIRouter(prefix="/webrtc", tags=["webrtc"], route_class=CommittingRoute)
 
 CurrentCandidate = Annotated[Principal, Depends(get_current_candidate)]
 

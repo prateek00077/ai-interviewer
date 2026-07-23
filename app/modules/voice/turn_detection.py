@@ -1,14 +1,23 @@
-"""Pipecat Smart Turn / Silero VAD configuration (stop_secs=0.2).
+"""Silero VAD configuration: when the candidate has stopped talking.
 
 Turn detection is the single most felt setting in the product. Too eager and the
 interviewer cuts off a candidate who paused to think, which reads as rude and
 loses the answer. Too patient and every exchange carries a beat of dead air,
 which reads as slow.
 
-0.2 seconds is deliberately short, and it works because it is not the only
-signal: the ASR's own end-of-utterance logic (stop_history in nvidia/stt.py)
-runs alongside it, so VAD proposes and the ASR confirms. A single 0.2s gap in
-speech does not end the turn on its own.
+IT WAS 0.2 SECONDS AND THAT WAS WRONG. The theory was that VAD proposes and the
+ASR confirms, so a short gap is safe. In practice a candidate thinking mid-answer
+-- "we sharded on... tenant id" -- had that pause read as the end of their turn,
+and the interviewer answered half a sentence. An interview is not a chat
+assistant: the whole point is that people stop to think before saying something
+considered, and the setting has to make room for that.
+
+0.8s is pipecat's own default. The cost is a beat of dead air; the cost of the
+old value was the answer.
+
+This is THE setting for end-of-turn. The ASR has its own stop_history, but that
+is measured in frames and is already ~3s -- far more patient than this -- so it
+is not what cuts a candidate off. Leave it alone and tune here.
 
 Silero runs on onnxruntime, on the CPU, in about a millisecond per frame -- it
 is not a meaningful part of the turn budget.
@@ -31,8 +40,9 @@ CONFIDENCE = 0.7
 # Speech must persist this long before a turn starts, which rejects clicks.
 START_SECS = 0.2
 # Below this the frame is treated as silence regardless of Silero's opinion.
-# Guards against a hissy microphone reading as continuous speech.
-MIN_VOLUME = 0.6
+# Guards against a hissy microphone reading as continuous speech -- but set too
+# high it does the opposite, and a softly-spoken candidate on a laptop mic is
+# never heard at all. Configurable for exactly that reason.
 
 
 def params() -> VADParams:
@@ -40,7 +50,7 @@ def params() -> VADParams:
         confidence=CONFIDENCE,
         start_secs=START_SECS,
         stop_secs=settings.vad_stop_secs,
-        min_volume=MIN_VOLUME,
+        min_volume=settings.vad_min_volume,
     )
 
 
@@ -55,5 +65,9 @@ def build() -> VADProcessor:
     parameter, so it sits explicitly between the transport input and the STT
     service where its ordering is visible.
     """
-    log.info("voice.vad_configured", stop_secs=settings.vad_stop_secs)
+    log.info(
+        "voice.vad_configured",
+        stop_secs=settings.vad_stop_secs,
+        min_volume=settings.vad_min_volume,
+    )
     return VADProcessor(vad_analyzer=analyzer())

@@ -62,6 +62,13 @@ class CriterionVerdict(BaseModel):
     Allowing null is what makes "the topic never came up" expressible. Without
     it, a model asked for a number always produces one, and a criterion the
     interview never reached gets scored on nothing.
+
+    A null does NOT mean the candidate scored zero. Whether an unevidenced
+    criterion counts against them is decided in ``aggregator`` from whether they
+    participated at all -- not here, and deliberately not by the model. MEASURED:
+    asked to flag "was this topic raised?", Nemotron answered yes for a
+    criterion the transcript never mentions, which would have floor-scored a
+    candidate on a question nobody put to them.
     """
 
     score: Decimal | None = None
@@ -180,6 +187,8 @@ async def score_criterion(criterion: RubricCriterion, turns: list[InterviewTurn]
         verdict = await nim_client.complete_structured(messages, CriterionVerdict)
     except Exception as exc:  # noqa: BLE001 - one criterion must not sink the report
         log.warning("scoring.criterion_failed", criterion=criterion.name, error=str(exc)[:300])
+        # Ungraded, never a floor score. Our infrastructure failing is not the
+        # candidate answering badly, and must not cost them a mark.
         return Graded(score=None, rationale=f"Scoring failed: {str(exc)[:200]}", evidence=[])
 
     evidence = verify_evidence(verdict.evidence, turns)

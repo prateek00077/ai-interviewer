@@ -70,8 +70,28 @@ def band_for(overall: Decimal) -> Recommendation:
     return Recommendation.NO_HIRE
 
 
-def aggregate(scored: list[tuple[Decimal, Decimal | None]]) -> Outcome:
+def aggregate(
+    scored: list[tuple[Decimal, Decimal | None]], *, participated: bool = False
+) -> Outcome:
     """``[(weight, score_or_None), ...]`` -> the overall outcome.
+
+    ``participated`` is whether the candidate actually said anything. It decides
+    the one genuinely ambiguous case, and the distinction matters to a real
+    person:
+
+    - Nothing graded and they never spoke -> INSUFFICIENT_EVIDENCE, no number.
+      Their audio failed. Nobody assessed them, and filing that next to a poor
+      performance would be a false record.
+    - Nothing graded and they DID speak -> the floor of the band, NO_HIRE. They
+      joined, were asked, and answered "I don't remember" and "can we move on".
+      That is not missing data; it is an answer, and reporting it as
+      "insufficient evidence" told a recruiter nothing about an interview that
+      had in fact happened.
+
+    Decided here from the transcript rather than by asking the model which case
+    it is. MEASURED: asked to flag whether a topic had been raised, Nemotron
+    said yes for a criterion the transcript never mentions -- which would have
+    floor-scored a candidate on a question nobody put to them.
 
     Takes plain numbers rather than ORM rows so the arithmetic is testable
     without a database, and so the same function serves both the live scoring
@@ -82,16 +102,21 @@ def aggregate(scored: list[tuple[Decimal, Decimal | None]]) -> Outcome:
     graded_weight = sum((weight for weight, _ in graded), Decimal(0))
 
     if total_weight <= 0 or not graded:
+        spoke_but_evidenced_nothing = participated and total_weight > 0
         return Outcome(
-            overall=None,
-            recommendation=Recommendation.INSUFFICIENT_EVIDENCE,
+            overall=MIN_BAND if spoke_but_evidenced_nothing else None,
+            recommendation=(
+                Recommendation.NO_HIRE
+                if spoke_but_evidenced_nothing
+                else Recommendation.INSUFFICIENT_EVIDENCE
+            ),
             coverage=Decimal(0),
             graded_count=0,
             total_count=len(scored),
         )
 
     coverage = (graded_weight / total_weight).quantize(_QUANTUM)
-    if coverage < MIN_COVERAGE:
+    if coverage < MIN_COVERAGE and not participated:
         log.warning(
             "scoring.coverage_too_low",
             coverage=str(coverage),

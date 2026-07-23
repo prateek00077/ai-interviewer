@@ -25,7 +25,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 
-from app.core.events import TurnCompleted, publish
+from app.core.events import TurnCompleted, VoiceSignalObserved, publish
 
 log = structlog.get_logger(__name__)
 
@@ -44,6 +44,10 @@ class TranscriptObserver(BaseObserver):
       as sentences are synthesised. Emitting one turn per fragment would shred
       a single reply across a dozen transcript lines, so they are accumulated
       and flushed when ``BotStoppedSpeakingFrame`` says the reply is finished.
+
+    Both routes go through ``_first_sighting`` first, because this observer is
+    invoked once per pipeline HOP rather than once per frame -- see that method
+    for the triple-transcript it caused.
     """
 
     def __init__(
@@ -68,6 +72,12 @@ class TranscriptObserver(BaseObserver):
         # follow-up is not a new question. Good enough to group a transcript by
         # question and deliberately not used for anything load-bearing.
         self._question_ordinal = 0
+        # Highest frame id already accepted. See _first_sighting: the observer
+        # is called once per pipeline hop, so the same frame arrives repeatedly.
+        self._last_frame_id = -1
+        # When the candidate last finished speaking, for the silence gap that
+        # proctoring reads. None until they have spoken once.
+        self._last_candidate_ms: int | None = None
 
     @staticmethod
     def _now_ms() -> int:
@@ -107,8 +117,39 @@ class TranscriptObserver(BaseObserver):
         )
         self._ordinal += 1
 
+    def _first_sighting(self, frame: object) -> bool:
+        """True the first time this exact frame is seen.
+
+        THE OBSERVER FIRES ONCE PER PIPELINE HOP, NOT ONCE PER FRAME. A
+        ``TTSTextFrame`` produced by the TTS service is pushed TTS ->
+        transport.output() -> audio_buffer -> assistant aggregator, so the
+        observer sees the same object three times and appended its text three
+        times.
+
+        OBSERVED in a real transcript: every interviewer line stored as
+        "Hi Prateek...Hi Prateek...Hi Prateek..." -- three identical copies
+        concatenated. The candidate's turns were unaffected, which is why it hid
+        for so long: a ``TranscriptionFrame`` is consumed by the user aggregator
+        one hop after STT, so it only ever gets pushed once.
+
+        Frame ids are assigned from a process-wide counter and never change, so
+        "have I already seen this?" is just "is its id no higher than the last
+        one I accepted?" -- O(1), and no set to grow for the length of a
+        45-minute interview.
+        """
+        frame_id = getattr(frame, "id", None)
+        if frame_id is None:
+            return True
+        if frame_id <= self._last_frame_id:
+            return False
+        self._last_frame_id = frame_id
+        return True
+
     async def on_push_frame(self, data: FramePushed) -> None:
         frame = data.frame
+
+        if not self._first_sighting(frame):
+            return
 
         if isinstance(frame, TranscriptionFrame):
             # Already one final utterance. InterimTranscriptionFrame is a
@@ -116,6 +157,8 @@ class TranscriptObserver(BaseObserver):
             # are for display, not for the record.
             now = self._offset_ms()
             self._emit(CANDIDATE, frame.text, now, now)
+            self._report_voice_signals(frame, now)
+            self._last_candidate_ms = now
             return
 
         if isinstance(frame, TTSTextFrame):
@@ -126,6 +169,41 @@ class TranscriptObserver(BaseObserver):
 
         if isinstance(frame, BotStoppedSpeakingFrame):
             self.flush_bot_turn()
+
+    def _report_voice_signals(self, frame: object, now_ms: int) -> None:
+        """Publish what the ASR heard, for proctoring to interpret.
+
+        The model is sortformer, so diarization rides along with the
+        transcription at no extra cost -- this is the only place those speaker
+        tags are visible, and without forwarding them SECOND_SPEAKER can never
+        fire. It was unwired until now: ``modules/proctoring/voice_signals``
+        existed, was tested, and was imported by nothing.
+
+        Never raises. The tag shape is the vendor's and varies with the model,
+        and a proctoring signal must not be the reason a live interview stops.
+        """
+        try:
+            counts: dict[int, int] = {}
+            for word in getattr(frame, "words", None) or []:
+                tag = getattr(word, "speaker_tag", None) or getattr(word, "speaker", None)
+                if isinstance(tag, int) and tag >= 0:
+                    counts[tag] = counts.get(tag, 0) + 1
+
+            gap = 0 if self._last_candidate_ms is None else now_ms - self._last_candidate_ms
+            if not counts and gap <= 0:
+                return
+
+            publish(
+                VoiceSignalObserved(
+                    org_id=self._org_id,
+                    interview_id=self._interview_id,
+                    speaker_tag_counts=counts,
+                    silence_gap_ms=max(0, gap),
+                    offset_ms=now_ms,
+                )
+            )
+        except Exception:  # noqa: BLE001 - a signal must never break the call
+            log.debug("voice.signal_report_failed", exc_info=True)
 
     def flush_bot_turn(self) -> None:
         """Emit the accumulated interviewer reply as one turn.

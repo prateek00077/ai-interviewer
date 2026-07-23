@@ -42,6 +42,7 @@ import uuid
 import structlog
 from celery import chain, chord, group
 
+from app.workers.celery_app import celery_app
 from app.workers.tasks import (
     interview_tasks,
     proctoring_tasks,
@@ -53,25 +54,47 @@ log = structlog.get_logger(__name__)
 
 
 def build(org_id: uuid.UUID, interview_id: uuid.UUID) -> chain:
-    """The chain for one interview, unsent."""
+    """The chain for one interview, unsent.
+
+    EVERY CANVAS NODE IS BOUND TO ``celery_app`` EXPLICITLY. Without ``app=``,
+    a group or chord resolves its app at ``apply_async`` time from
+    ``celery.current_app`` -- which is stored in a THREAD-LOCAL. ``enqueue`` is
+    called through ``asyncio.to_thread`` (``apply_async`` does blocking socket
+    I/O and must not sit on the event loop serving live voice sessions), so on
+    that worker thread ``current_app`` is Celery's built-in default app, which
+    has no result backend.
+
+    The failure that produces is quiet and total: chords need a backend, so the
+    whole chain raises "Starting chords requires a result backend to be
+    configured", ``enqueue`` catches it by design, logs, and returns None. The
+    interview completes, nothing is scored, no report is written, and the only
+    evidence is one log line. OBSERVED end to end before this line existed.
+    """
     org, interview = str(org_id), str(interview_id)
 
     parallel = group(
         scoring_tasks.measure_signals.si(org, interview),
         proctoring_tasks.analyze_frames.si(org, interview),
+        app=celery_app,
     )
 
     reports = group(
         report_tasks.render_recruiter_report.si(org, interview),
         report_tasks.render_candidate_report.si(org, interview),
+        app=celery_app,
     )
 
     return chain(
         interview_tasks.finalize_interview.si(org, interview),
         scoring_tasks.correct_transcript.si(org, interview),
-        chord(parallel, scoring_tasks.score_interview.si(org, interview)),
+        chord(
+            parallel,
+            scoring_tasks.score_interview.si(org, interview),
+            app=celery_app,
+        ),
         proctoring_tasks.finalize_verdict.si(org, interview),
         reports,
+        app=celery_app,
     )
 
 
