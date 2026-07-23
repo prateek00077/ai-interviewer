@@ -42,11 +42,18 @@ from app.models.question_plan import (
     RubricCriterion,
 )
 from app.models.resume import Resume, ResumeChunk, ResumeStatus
+from app.models.score import (
+    CriterionScore,
+    Recommendation,
+    Score,
+    ScoringStatus,
+)
 from app.models.user import Candidate, User, UserRole
 
 __all__ = [
     "Base",
     "Candidate",
+    "CriterionScore",
     "EmploymentType",
     "Interview",
     "InterviewStatus",
@@ -67,7 +74,10 @@ __all__ = [
     "ProctoringPolicy",
     "ProctoringVerdict",
     "QuestionPlan",
+    "Recommendation",
     "RubricCriterion",
+    "Score",
+    "ScoringStatus",
     "Resume",
     "Speaker",
     "ResumeChunk",

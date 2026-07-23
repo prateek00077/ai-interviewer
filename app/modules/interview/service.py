@@ -13,6 +13,7 @@ for the interview's state. The voice module never sets a status itself.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -238,7 +239,36 @@ async def _on_session_started(event: SessionStarted) -> None:
 
 async def _on_session_ended(event: SessionEnded) -> None:
     async with tenant_session(event.org_id, "system", None) as session:
-        await finish(session, event.interview_id, reason=event.reason)
+        # Read BEFORE finish. The interview reaching a terminal status during
+        # this call is the edge the pipeline hangs off, and a duplicate delivery
+        # -- which the bus permits -- must not enqueue the whole chain a second
+        # time. The tasks are idempotent, so a double run would be survivable
+        # rather than wrong, but it is minutes of GPU time either way.
+        was_terminal = state_machine.is_terminal(
+            (await get_interview(session, event.interview_id)).status
+        )
+        interview = await finish(session, event.interview_id, reason=event.reason)
+        if event.recording_key:
+            # The only place this key is captured. The voice module announces it
+            # as it shuts down and then forgets it; everything offline -- the
+            # transcript pass, the delivery signals, the recruiter's playback
+            # link -- starts from this column.
+            interview.recording_key = event.recording_key
+        just_ended = not was_terminal and state_machine.is_terminal(interview.status)
+
+    if not just_ended:
+        return
+
+    # Imported here, not at module scope: workers/pipeline imports the tasks,
+    # which import this module. A top-level import would be a cycle, and the API
+    # process would fail to boot.
+    from app.workers import pipeline
+
+    # In a thread because ``apply_async`` writes to the broker socket
+    # synchronously. This handler runs on the same event loop as every live
+    # voice session, and a broker that has gone slow would otherwise stall
+    # everyone else's audio while one interview finishes.
+    await asyncio.to_thread(pipeline.enqueue, event.org_id, event.interview_id)
 
 
 def register() -> None:

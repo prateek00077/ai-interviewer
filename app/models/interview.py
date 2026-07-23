@@ -75,6 +75,12 @@ class Interview(Base, TenantMixin, TimestampMixin):
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Where the call audio landed. The voice session announces it on the bus as
+    # it shuts down, and everything offline -- the full-quality transcript pass,
+    # the confidence signals, the recruiter's playback link -- starts from here.
+    # NULL is normal and not an error: a candidate who joined and never spoke
+    # produces no recording, and the pipeline degrades to the live turns.
+    recording_key: Mapped[str | None] = mapped_column(Text)
 
     candidate: Mapped["Candidate"] = relationship(back_populates="interviews")
     invites: Mapped[list["Invite"]] = relationship(

@@ -84,6 +84,8 @@ TENANT_TABLES: list[str] = [
     "proctoring_policies",
     "proctoring_events",
     "proctoring_verdicts",
+    "scores",
+    "criterion_scores",
 ]
 
 # Tables where org membership is not sufficient: a candidate actor is narrowed to
@@ -120,6 +122,12 @@ CANDIDATE_WRITABLE: dict[str, str] = {"resumes": "candidate_id"}
 # The proctoring tables are staff-only for the same reason the plan is: a
 # candidate who can read the policy knows the blur limit, and one who can read
 # their own events knows exactly what was noticed and what was not.
+#
+# The score tables are staff-only and the policy is the enforcement, not the
+# route. A candidate must never learn their band, their per-criterion marks or
+# the hire recommendation; the candidate-facing report is feedback and gaps
+# only. Putting that boundary in RLS means a future endpoint that forgets it
+# still returns nothing rather than everything.
 USER_ONLY_TABLES: list[str] = [
     "users",
     "interview_turns",
@@ -133,4 +141,6 @@ USER_ONLY_TABLES: list[str] = [
     "proctoring_policies",
     "proctoring_events",
     "proctoring_verdicts",
+    "scores",
+    "criterion_scores",
 ]
