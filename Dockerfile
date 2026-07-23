@@ -82,6 +82,11 @@ COPY alembic ./alembic
 COPY alembic.ini ./
 COPY config ./config
 COPY scripts ./scripts
+# The manual test console. Not mounted when ENVIRONMENT=production (see
+# api/dev.py), but the image is what people run locally to try the product, and
+# without this file /dev answers 500 -- which reads as a broken build rather
+# than a missing asset.
+COPY static ./static
 
 # Non-root. Nothing here writes to the filesystem -- uploads go to S3 and logs
 # go to stdout -- so there is no reason for the process to own its own code.

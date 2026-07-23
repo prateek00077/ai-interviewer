@@ -101,6 +101,11 @@ services:
       # Overrides for the container network: inside compose the services are
       # reachable by name, not on localhost.
       DATABASE_URL: postgresql+asyncpg://app_user:app_pw@postgres:5432/ai_interviewer
+      # The owner URL too. It is only used by Alembic, which is exactly why it
+      # was missed: the API boots fine without it and `docker compose exec api
+      # alembic upgrade head` -- the documented way to migrate -- then fails
+      # trying to reach Postgres on the API container's own localhost.
+      DATABASE_OWNER_URL: postgresql+asyncpg://app_owner:owner_pw@postgres:5432/ai_interviewer
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
@@ -122,6 +127,7 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://app_user:app_pw@postgres:5432/ai_interviewer
+      DATABASE_OWNER_URL: postgresql+asyncpg://app_owner:owner_pw@postgres:5432/ai_interviewer
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
