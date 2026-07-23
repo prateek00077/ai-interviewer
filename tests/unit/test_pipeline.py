@@ -47,14 +47,27 @@ def test_every_link_takes_the_same_two_ids():
 
 
 def test_the_order_encodes_the_data_dependencies():
-    """Transcript correction precedes scoring because the scorer verifies its
-    quotes against the transcript. Verdict runs last because the vision pass
-    writes proctoring events it must include."""
+    """Each of these is a "step N prints or reads what step N-1 wrote"."""
     names = [s.task for s in _signatures(pipeline.build(ORG, INTERVIEW))]
-    assert names.index("scoring.correct_transcript") < names.index("scoring.score_interview")
-    assert names.index("proctoring.analyze_frames") < names.index("proctoring.finalize_verdict")
     assert names[0] == "interview.finalize"
-    assert names[-1] == "proctoring.finalize_verdict"
+
+    # The scorer verifies its quotes against the transcript, so the correction
+    # has to land first or every citation is checked against text about to change.
+    assert names.index("scoring.correct_transcript") < names.index("scoring.score_interview")
+    # The verdict is recomputed from the full event set, including what the
+    # vision pass writes.
+    assert names.index("proctoring.analyze_frames") < names.index("proctoring.finalize_verdict")
+    # Both reports print results settled by everything above them. A recruiter
+    # PDF rendered before the verdict would say "no verdict recorded" forever.
+    for report in ("reports.render_recruiter", "reports.render_candidate"):
+        assert names.index("scoring.score_interview") < names.index(report)
+        assert names.index("proctoring.finalize_verdict") < names.index(report)
+
+
+def test_the_two_reports_render_concurrently():
+    """Independent work, both slow, neither reads what the other produces."""
+    names = [s.task for s in _signatures(pipeline.build(ORG, INTERVIEW))]
+    assert {"reports.render_recruiter", "reports.render_candidate"} == set(names[-2:])
 
 
 def test_the_two_slow_independent_steps_run_concurrently():

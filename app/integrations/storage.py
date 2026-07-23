@@ -187,3 +187,17 @@ async def delete_object(*, bucket: str, key: str) -> None:
         await asyncio.to_thread(_client().delete_object, Bucket=bucket, Key=key)
     except ClientError as exc:
         raise StorageError() from exc
+
+
+async def check_bucket(bucket: str) -> None:
+    """Prove credentials and reachability. Raises on either being wrong.
+
+    ``head_bucket`` rather than a list: it is the cheapest call that exercises
+    the full path -- signature, network, permissions -- and it does not page
+    through objects on a bucket that may hold thousands.
+
+    Used by the readiness probe, which is why this raises the underlying error
+    rather than a generic StorageError: an operator reading a probe needs to
+    know whether it was DNS, credentials, or a missing bucket.
+    """
+    await asyncio.to_thread(_client().head_bucket, Bucket=bucket)

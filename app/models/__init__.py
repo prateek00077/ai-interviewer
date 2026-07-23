@@ -41,6 +41,7 @@ from app.models.question_plan import (
     QuestionPlan,
     RubricCriterion,
 )
+from app.models.report import CandidateReport, RecruiterReport, ReportStatus
 from app.models.resume import Resume, ResumeChunk, ResumeStatus
 from app.models.score import (
     CriterionScore,
@@ -73,8 +74,11 @@ __all__ = [
     "ProctoringEvent",
     "ProctoringPolicy",
     "ProctoringVerdict",
+    "CandidateReport",
     "QuestionPlan",
     "Recommendation",
+    "RecruiterReport",
+    "ReportStatus",
     "RubricCriterion",
     "Score",
     "ScoringStatus",

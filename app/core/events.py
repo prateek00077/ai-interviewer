@@ -169,6 +169,15 @@ class EventBus:
         if pending:
             await asyncio.wait(pending, timeout=timeout_secs)
 
+    def pending_count(self) -> int:
+        """Handlers still in flight. Exposed for /metrics.
+
+        A number that climbs and does not come back down means handlers are
+        outliving the events that spawned them -- a stuck database call, most
+        likely -- and it is the earliest visible symptom of that.
+        """
+        return len(self._tasks)
+
     def clear(self) -> None:
         """Drop every subscription. Tests only."""
         self._handlers.clear()

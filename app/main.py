@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis
 
+from app.api import ops
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.events import bus
@@ -37,6 +38,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     interview_service.register()
     transcript.register()
 
+    # Explicitly cleared, not merely defaulted. The flag is a module global, so
+    # a process that starts a second app after shutting one down -- every test
+    # run, and uvicorn --reload -- would otherwise come up permanently draining
+    # and refuse every voice session with no obvious reason.
+    ops.set_draining(False)
+
     redis = Redis.from_url(settings.redis_url)
     app.state.redis = redis
     app.state.token_store = RefreshTokenStore(redis)
@@ -44,6 +51,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # Refuse NEW voice sessions before tearing anything down. A candidate
+        # who connects during shutdown would otherwise get a pipeline built
+        # against a Redis pool that is about to close, which fails a minute
+        # later mid-answer rather than at the door.
+        ops.set_draining(True)
+
         # Live voice sessions first: each one is a real person mid-sentence, and
         # ending them cleanly is what flushes the final turn and uploads the
         # recording. Only then drain the bus that carries those events.
@@ -85,10 +98,10 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(app)
     app.include_router(api_router)
-
-    @app.get("/health", tags=["ops"])
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    # Unversioned and unauthenticated, deliberately: a probe is issued by an
+    # orchestrator that has no credentials, and /health pinned to /api/v1 would
+    # have to be re-pointed at every API version bump.
+    app.include_router(ops.router)
 
     return app
 

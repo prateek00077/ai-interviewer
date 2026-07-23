@@ -19,6 +19,7 @@ from typing import Annotated
 import structlog
 from fastapi import APIRouter, Depends, Request
 
+from app.api import ops
 from app.api.deps import Principal, ScopedSession, get_current_candidate, get_redis
 from app.core.exceptions import ConflictError, NotFoundError
 from app.modules.interview import service as interview_service
@@ -46,6 +47,16 @@ async def offer(
     """
     if principal.interview_id is None:
         raise NotFoundError("This token is not tied to an interview.")
+
+    if ops.is_draining():
+        # Refused at the door during shutdown. Building a pipeline against a
+        # Redis pool that is seconds from closing would fail a minute later,
+        # mid-answer, which is far worse for the candidate than a clean refusal
+        # they can retry against the next instance.
+        raise ConflictError(
+            "This server is shutting down. Please rejoin with the same link.",
+            retryable=True,
+        )
 
     interview = await interview_service.get_interview(db, principal.interview_id)
     if state_machine.is_terminal(interview.status):

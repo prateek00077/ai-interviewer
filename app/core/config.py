@@ -113,6 +113,30 @@ class Settings(BaseSettings):
     nim_profile: Literal["cloud", "local"] = "cloud"
     nim_request_timeout_secs: float = 60.0
 
+    # --- Email ---
+    # An empty host disables sending. Deliberately the default: local
+    # development must not need a mail server, and a misconfigured deployment
+    # should log the message it would have sent rather than crash the invite.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: SecretStr = SecretStr("")
+    smtp_starttls: bool = True
+    email_from: str = "noreply@example.com"
+    smtp_timeout_secs: float = 15.0
+
+    # Where the candidate-facing app lives. Invite emails are the only place a
+    # URL is constructed rather than received, and it cannot come from a request
+    # header -- a Host header is attacker-controlled, and using one here would
+    # let anyone mint an invite email pointing at their own domain.
+    app_base_url: str = "http://localhost:3000"
+
+    # --- Reports ---
+    # Longer than the upload presign: a recruiter opens a report, reads it, and
+    # comes back to it. Still bounded, because the URL is a bearer credential
+    # for a document containing an assessment of a named person.
+    report_download_ttl_secs: int = 3600
+
     @field_validator("cors_origins", "webrtc_stun_urls", mode="before")
     @classmethod
     def _split_csv(cls, v: object) -> object:

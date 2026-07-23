@@ -1,7 +1,11 @@
 # postgres+pgvector, redis, minio, api, worker
 #
-# api and worker land with the deployment slice; until then both run on the host
-# against these backing services.
+# The backing services come up by default. `api` and `worker` are behind the
+# `app` profile, so day-to-day development still runs them on the host with a
+# reload loop:
+#
+#   docker compose up -d                    # backing services only
+#   docker compose --profile app up -d      # everything, containerised
 #
 # After `docker compose up -d`, bootstrap the roles once (CREATE ROLE is not a
 # privilege Alembic should hold) and then migrate:
@@ -81,6 +85,60 @@ services:
       for b in resumes recordings proctoring reports; do mc mb --ignore-existing local/$$b; done &&
       echo 'buckets ready'
       "
+
+  # --- Application ---------------------------------------------------------
+  #
+  # One image, two entrypoints. The API and the worker share every dependency
+  # except the command, and separate images would double build time while
+  # letting their dependency sets drift apart unnoticed.
+
+  api:
+    profiles: ["app"]
+    build: .
+    container_name: aii-api
+    env_file: .env
+    environment:
+      # Overrides for the container network: inside compose the services are
+      # reachable by name, not on localhost.
+      DATABASE_URL: postgresql+asyncpg://app_user:app_pw@postgres:5432/ai_interviewer
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      S3_ENDPOINT_URL: http://minio:9000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  worker:
+    profiles: ["app"]
+    build: .
+    container_name: aii-worker
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://app_user:app_pw@postgres:5432/ai_interviewer
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      S3_ENDPOINT_URL: http://minio:9000
+    # --concurrency=2, not the CPU-count default. These tasks are long and
+    # memory-hungry -- a WeasyPrint render and a librosa decode can be resident
+    # at once -- and the ceiling is the shared NIM endpoint's rate limit rather
+    # than local cores.
+    command: ["celery", "-A", "app.workers.celery_app:celery_app", "worker",
+              "--loglevel=info", "--concurrency=2"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
 
 volumes:
   pgdata:

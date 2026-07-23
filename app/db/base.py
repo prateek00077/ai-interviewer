@@ -86,11 +86,21 @@ TENANT_TABLES: list[str] = [
     "proctoring_verdicts",
     "scores",
     "criterion_scores",
+    "recruiter_reports",
+    "candidate_reports",
 ]
 
 # Tables where org membership is not sufficient: a candidate actor is narrowed to
 # rows it owns. Maps table -> the column holding the owning candidate id.
-CANDIDATE_SCOPED: dict[str, str] = {"interviews": "candidate_id", "candidates": "id"}
+CANDIDATE_SCOPED: dict[str, str] = {
+    "interviews": "candidate_id",
+    "candidates": "id",
+    # A candidate reads their own feedback and nothing else. The recruiter
+    # report lives in a SEPARATE table that candidates cannot read at all --
+    # see models/report.py for why that is two tables rather than one with an
+    # audience column.
+    "candidate_reports": "candidate_id",
+}
 
 # Candidate-scoped AND candidate-writable. Separate from CANDIDATE_SCOPED because
 # read-own and write-own are different grants: a candidate reads their interview
@@ -143,4 +153,5 @@ USER_ONLY_TABLES: list[str] = [
     "proctoring_verdicts",
     "scores",
     "criterion_scores",
+    "recruiter_reports",
 ]

@@ -116,5 +116,5 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 # boto3/botocore ship no type information. Silencing the import keeps the rest of
 # app/integrations/storage.py type-checked rather than untyped wholesale.
 [[tool.mypy.overrides]]
-module = ["boto3.*", "botocore.*", "celery.*", "riva.*"]
+module = ["boto3.*", "botocore.*", "celery.*", "riva.*", "weasyprint.*"]
 ignore_missing_imports = true

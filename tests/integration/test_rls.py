@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import ProgrammingError
 
-from app.db.base import CANDIDATE_SCOPED, TENANT_TABLES
+from app.db.base import CANDIDATE_SCOPED, CANDIDATE_WRITABLE, TENANT_TABLES
 from app.db.rls import all_tables
 from app.models.interview import Interview, InterviewTurn, Speaker
 from app.models.job import Job, JobDescription
@@ -373,13 +373,42 @@ async def test_candidate_actor_cannot_write(tenant_session, org_a):
             await s.flush()
 
 
-def test_candidate_scoped_registry_matches_reality():
-    """The scoped-table registry must name columns that exist on the models."""
-    models = {"interviews": Interview, "candidates": Candidate}
-    for table, column in CANDIDATE_SCOPED.items():
-        assert column in models[table].__table__.columns, (
-            f"CANDIDATE_SCOPED names {table}.{column}, which does not exist"
-        )
+def _tables_by_name() -> dict:
+    """Every mapped table, from the metadata rather than a hand-written dict.
+
+    The previous version listed the models literally and went stale the moment
+    a table was added to the registry -- failing with a KeyError about the new
+    table rather than the assertion it was written to make. Reading the
+    metadata means this cannot happen again.
+    """
+    import app.models  # noqa: F401 - populates the registry
+    from app.db.base import Base
+
+    return dict(Base.metadata.tables)
+
+
+@pytest.mark.parametrize(("table", "column"), sorted(CANDIDATE_SCOPED.items()))
+def test_candidate_scoped_registry_matches_reality(table, column):
+    """The scoped-table registry must name columns that exist on the models.
+
+    A policy generated against a column that does not exist fails at migration
+    time, but one generated against a *misspelled* column would be a policy
+    that silently matches nothing -- which reads as working isolation.
+    """
+    tables = _tables_by_name()
+    assert table in tables, f"CANDIDATE_SCOPED names {table}, which is not a mapped table"
+    assert column in tables[table].columns, (
+        f"CANDIDATE_SCOPED names {table}.{column}, which does not exist"
+    )
+
+
+@pytest.mark.parametrize(("table", "column"), sorted(CANDIDATE_WRITABLE.items()))
+def test_candidate_writable_registry_matches_reality(table, column):
+    tables = _tables_by_name()
+    assert table in tables, f"CANDIDATE_WRITABLE names {table}, which is not a mapped table"
+    assert column in tables[table].columns, (
+        f"CANDIDATE_WRITABLE names {table}.{column}, which does not exist"
+    )
 
 
 # --- Question plans: the answer key -----------------------------------------

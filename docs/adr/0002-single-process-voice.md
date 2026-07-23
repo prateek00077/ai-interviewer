@@ -22,6 +22,12 @@ Accepted now:
 - The API process becomes stateful. It needs sticky sessions, slow drain on
   deploy, and a shutdown path that ends live sessions before the event bus is
   drained (`app/main.py` lifespan does this).
+
+  The drain is now explicit: the lifespan sets `app/api/ops.py:set_draining`
+  before it closes anything, `POST /webrtc/offer` returns 409 from that moment,
+  and `/ready` reports 503 so the load balancer stops routing. Sessions already
+  running are left alone to finish — each is a real person mid-sentence, and
+  the point of draining is to stop *new* work, not to cut off current work.
 - A deploy interrupts live interviews. The mitigations are the per-turn Redis
   checkpoint and the multi-use invite: a candidate reconnects and resumes at
   the turn they left off, rather than starting over.

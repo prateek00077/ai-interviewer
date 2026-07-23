@@ -1,0 +1,65 @@
+{# Candidate report. Feedback and gaps ONLY.                                  #}
+{#                                                                            #}
+{# There is deliberately no score, band, recommendation, weight, criterion    #}
+{# mark or proctoring verdict anywhere in this template, and the view model   #}
+{# it renders (reports.candidate.CandidateView) has no field that could carry #}
+{# one. If you find yourself adding {{ v.overall }} here, the field does not  #}
+{# exist -- that is the design, not an oversight. A test asserts it.          #}
+<style>
+  @page {
+    size: A4;
+    margin: 20mm 18mm;
+    @bottom-center {
+      content: "page " counter(page) " of " counter(pages);
+      font-family: sans-serif; font-size: 8pt; color: #888;
+    }
+  }
+  body { font-family: sans-serif; font-size: 11pt; color: #1a1a1a; line-height: 1.55; }
+  h1 { font-size: 18pt; margin: 0 0 1mm; }
+  h2 { font-size: 12.5pt; margin: 8mm 0 3mm; }
+  .sub { color: #555; font-size: 10pt; margin: 0 0 6mm; }
+  .summary { background: #f6f6f4; padding: 5mm; margin: 0 0 4mm; }
+  /* A heading stranded at the foot of a page reads as an empty section. */
+  .item { break-inside: avoid; margin: 0 0 4mm; }
+  .item h3 { font-size: 11pt; margin: 0 0 1mm; }
+  .item p { margin: 0; }
+  .closing { color: #555; font-size: 9.5pt; margin-top: 9mm; }
+</style>
+
+<h1>Your interview feedback</h1>
+<p class="sub">{{ v.job_title }}{% if v.candidate_name %} &middot; prepared for {{ v.candidate_name }}{% endif %}</p>
+
+{% if v.summary %}
+<div class="summary">{{ v.summary }}</div>
+{% endif %}
+
+{% if v.strengths %}
+<h2>What came across well</h2>
+{% for item in v.strengths %}
+  <div class="item">
+    <h3>{{ item.title }}</h3>
+    <p>{{ item.detail }}</p>
+  </div>
+{% endfor %}
+{% endif %}
+
+{% if v.growth_areas %}
+<h2>What would be worth developing</h2>
+{% for item in v.growth_areas %}
+  <div class="item">
+    <h3>{{ item.title }}</h3>
+    <p>{{ item.detail }}</p>
+  </div>
+{% endfor %}
+{% endif %}
+
+{% if not v.strengths and not v.growth_areas and not v.summary %}
+<p>We were not able to prepare detailed feedback for this interview. Please
+   contact the hiring team.</p>
+{% endif %}
+
+<p class="closing">
+  This feedback is about the conversation itself and is written to be useful to
+  you. It is not a decision — the hiring team will be in touch separately about
+  next steps.
+</p>

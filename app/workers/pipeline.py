@@ -2,6 +2,7 @@
 
     finalize -> correct_transcript -> [measure_signals | analyze_frames]
              -> score_interview -> finalize_verdict
+             -> [render_recruiter | render_candidate]
 
 ORDER IS A DEPENDENCY GRAPH, NOT A PREFERENCE.
 
@@ -14,8 +15,12 @@ ORDER IS A DEPENDENCY GRAPH, NOT A PREFERENCE.
   instead of their sum.
 - ``score_interview`` waits on that group only because a chord needs a join
   point. It reads neither result.
-- ``finalize_verdict`` runs last because the vision pass writes proctoring
-  events, and the verdict is recomputed from the full set.
+- ``finalize_verdict`` runs before the reports because the recruiter PDF prints
+  the verdict, and a report rendered ahead of it would show "no verdict
+  recorded" permanently.
+- The two report renders are a group for the same reason as the pair above:
+  independent work, both slow, and nothing either produces is read by the
+  other. They are last because every input they print is settled by then.
 
 EVERY LINK IS SIGNATURE-IMMUTABLE. Tasks take ``(org_id, interview_id)`` and
 return a dict nobody consumes, rather than piping results into the next link.
@@ -37,7 +42,12 @@ import uuid
 import structlog
 from celery import chain, chord, group
 
-from app.workers.tasks import interview_tasks, proctoring_tasks, scoring_tasks
+from app.workers.tasks import (
+    interview_tasks,
+    proctoring_tasks,
+    report_tasks,
+    scoring_tasks,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -51,11 +61,17 @@ def build(org_id: uuid.UUID, interview_id: uuid.UUID) -> chain:
         proctoring_tasks.analyze_frames.si(org, interview),
     )
 
+    reports = group(
+        report_tasks.render_recruiter_report.si(org, interview),
+        report_tasks.render_candidate_report.si(org, interview),
+    )
+
     return chain(
         interview_tasks.finalize_interview.si(org, interview),
         scoring_tasks.correct_transcript.si(org, interview),
         chord(parallel, scoring_tasks.score_interview.si(org, interview)),
         proctoring_tasks.finalize_verdict.si(org, interview),
+        reports,
     )
 
 

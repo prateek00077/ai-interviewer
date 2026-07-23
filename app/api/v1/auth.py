@@ -20,10 +20,14 @@ from app.api.deps import (
     register_rate_limit,
     require_role,
 )
+from app.core.config import settings
+from app.core.exceptions import NotFoundError
+from app.integrations import email
 from app.models.user import UserRole
 from app.modules.auth import invites as invite_service
 from app.modules.auth import service as auth_service
 from app.modules.auth.tokens import RefreshTokenStore
+from app.modules.jobs import service as jobs_service
 from app.schemas.auth import (
     CreateInviteRequest,
     InterviewTokenResponse,
@@ -145,6 +149,26 @@ async def create_invite(
         job_id=payload.job_id,
         max_redemptions=payload.max_redemptions,
     )
+
+    # After the invite is created, and never allowed to undo it. The row is the
+    # work; the email is the announcement. A mail server that is down must not
+    # roll back an invite the recruiter has just been told about -- and the
+    # token comes back in the response either way, so the link is recoverable
+    # by hand.
+    job_title = "an interview"
+    if payload.job_id is not None:
+        try:
+            job_title = (await jobs_service.get_job(db, payload.job_id)).title
+        except NotFoundError:
+            pass
+    await email.send_invite(
+        to=payload.candidate_email,
+        candidate_name=payload.candidate_name,
+        job_title=job_title,
+        invite_token=created.token,
+        expires_hours=settings.invite_ttl_hours,
+    )
+
     return InviteResponse(
         invite_id=created.invite_id,
         interview_id=created.interview_id,

@@ -42,6 +42,7 @@ celery_app = Celery(
         "app.workers.tasks.proctoring_tasks",
         "app.workers.tasks.interview_tasks",
         "app.workers.tasks.scoring_tasks",
+        "app.workers.tasks.report_tasks",
     ],
 )
 
