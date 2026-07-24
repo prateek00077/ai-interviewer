@@ -23,6 +23,7 @@ never shown.
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 
 import structlog
@@ -34,6 +35,32 @@ from app.modules import prompts
 log = structlog.get_logger(__name__)
 
 MAX_TRANSCRIPT_CHARS = 24_000
+
+# A strength claims the candidate demonstrated something. If none of its content
+# words appear anywhere in what the candidate actually said, it is praise for work
+# that never happened -- the one fabrication a courtesy document must not contain,
+# because a candidate who reads "you clearly explained your Kubernetes rollout"
+# about an interview where Kubernetes never came up learns the feedback is made
+# up. The prompt already forbids invented detail; this is the verify half of
+# propose-then-verify, kept deliberately narrow.
+#
+# Only strengths are checked, and only for ZERO overlap. Growth areas and the
+# summary are left alone: advice about what was MISSING ("give more structured
+# answers next time") legitimately shares little vocabulary with the transcript,
+# so the same test there would delete real coaching rather than catch invention.
+_WORD = re.compile(r"[a-z0-9+#.]+")
+_STOPWORDS = frozenset(
+    "a an and the of to in on for with at by from as is was were be been so "
+    "you your yours we our i my me it its this that they them their there here "
+    "explained described walked showed showing demonstrated clearly well good "
+    "how what why when where your answer answers question questions about would "
+    "could should did do does next time more make made give given when able "
+    "really very much still also into over than while during between across".split()
+)
+# Below this a strength has too few distinctive words to judge -- a two-word
+# label like "clear communication" carries no content to match and is left to the
+# prompt's own "no invented detail" rule rather than dropped on thin evidence.
+MIN_STRENGTH_CONTENT_WORDS = 3
 
 # What a candidate is told when the interview produced nothing to work from.
 # Deliberately not silence: someone who sat through an interview and gets an
@@ -85,6 +112,56 @@ def _render_transcript(turns: list) -> str:
     return rendered
 
 
+def _content_words(text: str) -> list[str]:
+    """Distinctive lowercase words, filler and feedback scaffolding removed. The
+    inner dot in "socket.io"/"node.js" survives; a sentence-ending one does not."""
+    out = []
+    for token in _WORD.findall(text.lower()):
+        token = token.strip(".")
+        if len(token) > 1 and token not in _STOPWORDS:
+            out.append(token)
+    return out
+
+
+def _candidate_vocabulary(turns: list) -> set[str]:
+    """Every distinctive word the candidate themselves said. The interviewer's
+    words are excluded on purpose: a strength must rest on what the CANDIDATE
+    demonstrated, not on the topic the interviewer merely raised."""
+    words: set[str] = set()
+    for turn in turns:
+        if turn.speaker.value == "CANDIDATE" and turn.content.strip():
+            words.update(_content_words(turn.content))
+    return words
+
+
+def _drop_ungrounded_strengths(feedback: Feedback, turns: list) -> Feedback:
+    """Remove any strength that shares no content word with the candidate's turns.
+
+    Conservative by design: a strength survives on a SINGLE shared word, and one
+    too short to carry content words is kept. The aim is to catch invented praise,
+    not to police phrasing. Growth areas and the summary pass through untouched.
+    """
+    vocabulary = _candidate_vocabulary(turns)
+    if not vocabulary:
+        # Nothing to check against (e.g. a candidate who never spoke). Leave the
+        # model's output alone rather than delete all of it on no evidence.
+        return feedback
+
+    kept: list[FeedbackItem] = []
+    for item in feedback.strengths:
+        # Distinct words: a label that just repeats ("clear delivery, clear
+        # delivery") carries two content words, not four, and is too thin to judge.
+        words = set(_content_words(f"{item.title} {item.detail}"))
+        if len(words) < MIN_STRENGTH_CONTENT_WORDS or words & vocabulary:
+            kept.append(item)
+        else:
+            log.info("reports.candidate_strength_ungrounded", title=item.title[:120])
+
+    if len(kept) == len(feedback.strengths):
+        return feedback
+    return feedback.model_copy(update={"strengths": kept})
+
+
 async def generate(
     *,
     job_title: str,
@@ -115,6 +192,8 @@ async def generate(
     except Exception as exc:  # noqa: BLE001
         log.warning("reports.candidate_feedback_failed", error=str(exc)[:300])
         return Feedback(summary=NO_TRANSCRIPT_SUMMARY)
+
+    feedback = _drop_ungrounded_strengths(feedback, turns)
 
     log.info(
         "reports.candidate_feedback_generated",

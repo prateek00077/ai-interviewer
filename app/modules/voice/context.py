@@ -21,6 +21,7 @@ from dataclasses import dataclass
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.question_plan import QuestionPlan
 from app.modules import prompts
 from app.modules.interview import service as interview_service
@@ -31,8 +32,12 @@ from app.modules.users import service as users_service
 
 log = structlog.get_logger(__name__)
 
-DEFAULT_DURATION_MINUTES = 30
-
+# What the interviewer tells the candidate to expect. This is the hard cap the
+# session watchdog enforces (session_manager), NOT a separate figure -- an
+# opening that promises "about 30 minutes" while the watchdog runs to 45 is a
+# promise the software then breaks. Sourcing both from one setting keeps them
+# from drifting apart. A well-flowing interview still finishes early; the number
+# is the ceiling, not a target.
 NO_JOB = "(no job description was provided)"
 NO_RESUME = "(no resume was provided)"
 
@@ -115,7 +120,7 @@ async def build(session: AsyncSession, interview_id: uuid.UUID) -> InterviewCont
         job_description=job_description,
         resume_context=resume_context,
         questions=_render_questions(plan),
-        duration_minutes=DEFAULT_DURATION_MINUTES,
+        duration_minutes=settings.max_interview_minutes,
     )
 
     log.info(
