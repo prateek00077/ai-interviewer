@@ -122,6 +122,13 @@ class Settings(BaseSettings):
     # --- Object storage (MinIO locally, R2/S3 in production) ---
     # Empty means "AWS S3 proper"; boto3 then resolves the regional endpoint.
     s3_endpoint_url: str | None = "http://localhost:9000"
+    # The host the *browser* must reach, baked into presigned URLs. It differs
+    # from s3_endpoint_url exactly when the API runs somewhere the browser
+    # cannot: inside Docker, the API talks to MinIO at "minio:9000", but a
+    # presigned URL carrying that host is unreachable from the host machine and
+    # the PUT dies as "TypeError: Failed to fetch". Left empty, presigning falls
+    # back to s3_endpoint_url, which is correct for a host-local API.
+    s3_public_endpoint_url: str | None = None
     s3_region: str = "us-east-1"
     s3_access_key_id: SecretStr = SecretStr("minioadmin")
     s3_secret_access_key: SecretStr = SecretStr("minioadmin")

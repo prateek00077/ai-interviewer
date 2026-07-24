@@ -236,29 +236,83 @@ class GeneratedPlan(BaseModel):
 # fragments, none of which mean it invented the experience. Well below 1.0 and
 # a question about Kubernetes "grounded" in the word "the" would pass.
 GROUNDING_THRESHOLD = 0.6
+# The SAME idea, applied to the question body instead of its citation. This is
+# the hole the evidence field alone cannot close: the model quotes a real line
+# in resume_evidence and then asks about something else entirely. MEASURED on a
+# real MERN CV run against a Celery/SQLAlchemy/S3 job description -- the exact
+# case this threshold was tuned on -- the six drifted questions ("Celery
+# workers", "async SQLAlchemy", "multi-tenant isolation") shared 0-14% of their
+# distinct words with the resume, while the one genuinely about the candidate's
+# work ("scaled to 30+ concurrent sessions") shared 45%. A body carrying the
+# job's vocabulary rather than the candidate's is a question about the vacancy,
+# not the person, and that is exactly what must not be asked.
+#
+# A fraction, not an absolute count: a long JD question with two coincidental
+# hits ("storage", "user") still lands at 0.14 and is caught, while a short,
+# legitimate question naming a single project ("Tell me about MongoDB") is 1.0
+# and is not. An absolute floor gets that second case backwards.
+BODY_GROUNDING_THRESHOLD = 0.25
 # Below this, dropping ungrounded questions would leave an interview too short
 # to score anything, so they are kept and the failure is logged instead.
 MIN_GROUNDED_QUESTIONS = 3
-# Words that carry no evidence of anything. Overlap on these is noise.
+# Words that carry no evidence of anything. Overlap on these is noise. Two
+# groups: filler that appears in any prose, and the scaffolding of an interview
+# question ("describe how you..."), which would otherwise pad the body's word
+# count and let a JD-drifted question dilute its way over the threshold.
 _STOPWORDS = frozenset(
     "a an and the of to in on for with at by from as is was were be been using "
     "used built build developed development work worked experience project "
-    "projects it its this that their they i my our we".split()
+    "projects it its this that their they i my our we "
+    "how what why when where who which whom can could would should do did does "
+    "describe explain tell talk walk about make made choose chose given any "
+    "them then now around including especially your you me my so if into over "
+    "than while during between across".split()
 )
 _WORD = re.compile(r"[a-z0-9+#.]+")
 
 
 def _words(text: str) -> list[str]:
-    return [w for w in _WORD.findall(text.lower()) if w not in _STOPWORDS and len(w) > 1]
+    # The "." is in the pattern to hold "socket.io" and "node.js" together, but
+    # it also greedily eats a sentence-ending period -- "Socket.IO." tokenises to
+    # "socket.io.", which then fails to match the clean "socket.io" on the resume.
+    # Strip only the surrounding dots; the internal one survives.
+    out = []
+    for token in _WORD.findall(text.lower()):
+        token = token.strip(".")
+        if len(token) > 1 and token not in _STOPWORDS:
+            out.append(token)
+    return out
+
+
+def _body_ungrounded(body: str, haystack: set[str]) -> bool:
+    """True when the QUESTION ITSELF is not about the resume.
+
+    Distinct hits, not raw count: a question that says "storage" three times is
+    no more about the resume than one that says it once. Measured over the body's
+    distinctive words, so the interview scaffolding ("describe how you...") is
+    already filtered out and cannot pad the denominator.
+    """
+    tokens = _words(body)
+    if not tokens:
+        return True
+    hits = {w for w in tokens if w in haystack}
+    return len(hits) / len(tokens) < BODY_GROUNDING_THRESHOLD
 
 
 def _ungrounded(plan: GeneratedPlan, resume_context: str) -> list[GeneratedQuestion]:
-    """Questions whose quoted evidence is not in the resume.
+    """Questions that are not about the resume -- by their citation OR their body.
 
     THE CHECK IS AGAINST THE RESUME TEXT, not against the evidence field being
     non-empty. A model asked to cite its source will happily cite one it made
     up, and an unverified citation is worth less than none -- it makes an
     invented question look checked.
+
+    And the body is checked as well as the citation, because they come apart:
+    the model quotes a real resume line into resume_evidence and then asks a
+    question about the job description's technology instead. The citation passes;
+    the question is still about work the candidate never did. Checking only the
+    citation is what let "how did you configure Celery workers" through against a
+    resume that has never heard of Celery.
 
     Word overlap rather than substring: the model reformats what it copies
     (case, punctuation, a bullet split across two lines) far more often than it
@@ -273,11 +327,10 @@ def _ungrounded(plan: GeneratedPlan, resume_context: str) -> list[GeneratedQuest
         needle = _words(question.resume_evidence)
         # No evidence at all is ungrounded by definition: nothing was claimed,
         # so nothing was checked.
-        if not needle:
-            offenders.append(question)
-            continue
-        hits = sum(1 for w in needle if w in haystack)
-        if hits / len(needle) < GROUNDING_THRESHOLD:
+        evidence_ungrounded = not needle or (
+            sum(1 for w in needle if w in haystack) / len(needle) < GROUNDING_THRESHOLD
+        )
+        if evidence_ungrounded or _body_ungrounded(question.body, haystack):
             offenders.append(question)
     return offenders
 

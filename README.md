@@ -11,11 +11,22 @@ Pipecat WebRTC
 
 # Setup
 
-Two ways to run it. **Path A** puts everything in Docker — nothing to install,
-slower to iterate on. **Path B** runs the API and worker on your machine against
-dockerised datastores — this is the one to use if you are changing code.
+Two ways to run it, each with a **one-command script** that does the whole path
+end to end, and the same steps written out by hand underneath if you'd rather
+run them yourself.
 
-Steps 1–3 are shared. Do them first, whichever path you take.
+| | **Path A — all in Docker** | **Path B — local environment** |
+|---|---|---|
+| **Runs where** | API + worker + datastores all in Docker | API + worker on your machine; only Postgres/Redis/MinIO in Docker |
+| **One command** | `./docker-run-script.sh` | `./local-run-script.sh` |
+| **You install** | Just Docker | Docker + Python 3.12 + a few system libs |
+| **Hot reload** | No | **Yes** (`--reload`) — use this to change code |
+| **Best for** | Trying the product | Developing it |
+
+Whichever you pick, **do the [NVIDIA key](#step-1--get-an-nvidia-api-key) and
+[`.env`](#step-2--create-your-env) steps first** — both scripts refuse to run
+without them. The scripts also do Step 3 (datastores) for you; the manual steps
+below are what each script automates, if you want to run them yourself.
 
 ## Step 1 — Get an NVIDIA API key
 
@@ -85,6 +96,19 @@ You only ever run this again after `docker compose down -v`.
 
 Use this to try the product. No Python install, no system libraries.
 
+## The one-command way
+
+After Steps 1–2 (key and `.env`), this does everything else — datastores, DB
+roles, build, migrate, seed, and a health check — and prints the URL to open:
+
+```bash
+./docker-run-script.sh
+```
+
+It is safe to re-run; it doubles as "bring the stack back up". When it finishes,
+open <http://localhost:8000/dev> and skip to [Testing](#testing). The rest of
+Path A is what this script runs, step by step, if you'd rather do it by hand.
+
 ## Step A1 — Build and start the API and worker
 
 **What it does:** builds one image serving both roles and starts two containers
@@ -141,7 +165,25 @@ There is no hot reload inside the image. If you are editing code, use Path B.
 # Path B — API and worker on your machine
 
 Use this if you are changing code. You get `--reload`, real tracebacks, and a
-debugger.
+debugger. The API and worker run on your host; only the datastores stay in
+Docker.
+
+## The one-command way
+
+After Steps 1–2 (key and `.env`), and the [system libraries](#step-b1--install-the-system-libraries)
+below (a one-time `apt`/`brew` install this script can't do for you), run:
+
+```bash
+./local-run-script.sh
+```
+
+It creates the virtualenv the first time, installs the project, brings up the
+datastores, migrates, seeds, starts the worker in the background, and then runs
+the API in **this** terminal with `--reload`. Press **Ctrl-C** to stop — the
+background worker is stopped with it. The worker's log is in `.local-run/worker.log`.
+
+Everything below is what this script automates. Run it by hand instead if you
+want the API and worker in two visible terminals.
 
 ## Step B1 — Install the system libraries
 
@@ -383,7 +425,8 @@ others.
 
 | Variable | Default | What it does |
 |---|---|---|
-| `S3_ENDPOINT_URL` | `http://localhost:9000` | MinIO locally; leave unset for real AWS S3. |
+| `S3_ENDPOINT_URL` | `http://localhost:9000` | Where the API reaches MinIO. MinIO locally; leave unset for real AWS S3. |
+| `S3_PUBLIC_ENDPOINT_URL` | *(empty → equals `S3_ENDPOINT_URL`)* | The host baked into presigned upload/download URLs — the one the **browser** must reach. Only differs from the line above in Path A, where the API reaches MinIO at `minio:9000` but the browser still needs `localhost:9000`; `docker-compose.yml` sets it there. On Path B, leave it empty. |
 | `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | `minioadmin` | Match the MinIO credentials in `docker-compose.yml`. |
 | `S3_BUCKET_RESUMES` | `resumes` | Uploaded CVs. |
 | `S3_BUCKET_RECORDINGS` | `recordings` | Interview audio, written when the session ends. |
@@ -392,6 +435,11 @@ others.
 
 The buckets are created automatically on first start by the `minio-init`
 service.
+
+Presigned URLs go straight from the browser to MinIO. If a resume upload fails
+in the console with **`TypeError: Failed to fetch`**, the signed URL is carrying
+a host the browser can't reach — check `S3_PUBLIC_ENDPOINT_URL` (Path A sets it
+to `http://localhost:9000`).
 
 ## Voice
 
@@ -477,24 +525,37 @@ same way if you need to.
 
 ---
 
-# Resetting
+# Stopping and resetting
+
+**Stop it** — there is a script for the Docker path, mirroring the run script:
+
+```bash
+./docker-stop-script.sh          # stop the app; datastores stay up, nothing deleted
+./docker-stop-script.sh --all    # stop everything (app + datastores); data kept
+./docker-stop-script.sh --wipe   # stop everything AND delete all data (asks first)
+```
+
+Path B (`./local-run-script.sh`) runs the app in your terminal, so **Ctrl-C**
+stops it — that takes the background worker down with it. Its datastores are the
+same Docker ones, so `./docker-stop-script.sh --all` stops those.
 
 **Restart the app only** — keeps all data:
 
 ```bash
 docker compose --profile app restart api worker    # Path A
-# Path B: Ctrl-C both terminals, start them again
+# Path A script: ./docker-run-script.sh (idempotent, brings it back up)
+# Path B: Ctrl-C the script/terminal, then re-run ./local-run-script.sh
 ```
 
-**Wipe everything** — deletes the database and all of MinIO:
+**Wipe everything** — deletes the database and all of MinIO. `./docker-stop-script.sh --wipe`
+is the guided way; by hand it is:
 
 ```bash
-docker compose --profile app down
-docker compose down -v
+docker compose --profile app down -v
 ```
 
-Then start again from **Step 3**, including `bootstrap_db.sql` — dropping the
-volumes drops the roles it created.
+Then start again — re-running either run script is enough, since each does
+`bootstrap_db.sql` for you (dropping the volumes drops the roles it created).
 
 ---
 

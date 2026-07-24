@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
 #
-# One-command local setup for AI Interviewer (all-in-Docker, README Path A).
+# One-command ALL-IN-DOCKER run for AI Interviewer (README Path A).
+#
+# Everything -- Postgres, Redis, MinIO, the API and the worker -- runs in Docker.
+# Nothing but Docker itself has to be installed on your machine. For the other
+# way (API + worker on your host, only the datastores in Docker) use its sibling,
+# ./local-run-script.sh -- see README Path B.
 #
 # Run it, then open http://localhost:8000/dev in a browser to test:
 #
-#   ./setup.sh
+#   ./docker-run-script.sh
 #
 # The only thing you must do by hand is put a real NVIDIA API key in .env
 # (get one at https://build.nvidia.com -- it starts `nvapi-`). This script
 # refuses to go further without it.
 #
-# It is safe to re-run: every step is idempotent, so `./setup.sh` also serves
-# as "bring the stack back up". To wipe everything and start clean:
+# It is safe to re-run: every step is idempotent, so `./docker-run-script.sh`
+# also serves as "bring the stack back up". To wipe everything and start clean:
 #
 #   docker compose --profile app down && docker compose down -v
 #
-# ...then run ./setup.sh again (it re-creates the DB roles that the volumes hold).
+# ...then run it again (it re-creates the DB roles that the volumes hold).
 
 set -euo pipefail
 
@@ -48,7 +53,7 @@ if [[ ! -f .env ]]; then
   cp .env.example .env
   die ".env did not exist, so I created it from .env.example.
     Now open .env and set NVIDIA_API_KEY to your key (get one at https://build.nvidia.com,
-    it starts 'nvapi-'), then re-run ./setup.sh."
+    it starts 'nvapi-'), then re-run ./docker-run-script.sh."
 fi
 
 # The key must be present and not the shipped placeholder.
@@ -58,7 +63,7 @@ if [[ -z "$key_val" || "$key_val" == nvapi-xxxx* || "$key_val" != nvapi-* ]]; th
   die "NVIDIA_API_KEY in .env is missing or still the placeholder.
     Get a key at https://build.nvidia.com (it starts 'nvapi-'), set this line in .env:
         NVIDIA_API_KEY=nvapi-your-key-here
-    then re-run ./setup.sh. There is no offline fallback -- the interview needs it."
+    then re-run ./docker-run-script.sh. There is no offline fallback -- the interview needs it."
 fi
 ok "NVIDIA_API_KEY is set."
 
@@ -69,9 +74,10 @@ docker compose up -d
 info "Waiting for Postgres, Redis and MinIO to report healthy..."
 deadline=$(( SECONDS + 120 ))
 while :; do
-  # Every declared healthcheck must be 'healthy'. `docker compose ps` with the
-  # health filter lists only containers still lacking a healthy status.
-  unhealthy="$(docker compose ps --format '{{.Service}} {{.Health}}' \
+  # Only the three datastores are gated here -- naming them explicitly, rather
+  # than scanning every service, is what makes this safe to re-run while the app
+  # profile is already up (the api/worker containers would otherwise be caught).
+  unhealthy="$(docker compose ps postgres redis minio --format '{{.Service}} {{.Health}}' \
     | awk '$2 != "" && $2 != "healthy" { print $1 }' || true)"
   if [[ -z "$unhealthy" ]]; then
     break

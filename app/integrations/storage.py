@@ -57,12 +57,10 @@ class PresignedUpload:
     content_type: str
 
 
-@lru_cache(maxsize=1)
-def _client() -> Any:
-    """One client per process. boto3 clients are thread-safe."""
+def _build_client(endpoint_url: str | None) -> Any:
     return boto3.client(
         "s3",
-        endpoint_url=settings.s3_endpoint_url or None,
+        endpoint_url=endpoint_url or None,
         region_name=settings.s3_region,
         aws_access_key_id=settings.s3_access_key_id.get_secret_value(),
         aws_secret_access_key=settings.s3_secret_access_key.get_secret_value(),
@@ -73,9 +71,29 @@ def _client() -> Any:
     )
 
 
+@lru_cache(maxsize=1)
+def _client() -> Any:
+    """One client per process, for the API's own reads and writes. boto3 clients
+    are thread-safe. Bound to s3_endpoint_url -- the host *this process* reaches
+    MinIO on, which inside Docker is the container name, not localhost."""
+    return _build_client(settings.s3_endpoint_url)
+
+
+@lru_cache(maxsize=1)
+def _presign_client() -> Any:
+    """A second client whose only job is to mint presigned URLs, bound to the
+    host the *browser* reaches. It differs from _client() only when the API runs
+    where the browser cannot follow it (Docker); see s3_public_endpoint_url. The
+    signature covers the Host header, so a URL must be signed with the exact host
+    the browser will send -- signing with the internal name and hoping is what
+    produced the failed PUTs."""
+    return _build_client(settings.s3_public_endpoint_url or settings.s3_endpoint_url)
+
+
 def reset_client() -> None:
-    """Drop the cached client. For tests that repoint the endpoint."""
+    """Drop the cached clients. For tests that repoint the endpoint."""
     _client.cache_clear()
+    _presign_client.cache_clear()
 
 
 def resume_key(org_id: uuid.UUID, candidate_id: uuid.UUID, extension: str) -> str:
@@ -101,7 +119,7 @@ async def presign_put(
     params: dict[str, Any] = {"Bucket": bucket, "Key": key, "ContentType": content_type}
     try:
         url = await asyncio.to_thread(
-            _client().generate_presigned_url,
+            _presign_client().generate_presigned_url,
             "put_object",
             Params=params,
             ExpiresIn=settings.s3_presign_ttl_secs,
@@ -123,7 +141,7 @@ async def presign_get(*, bucket: str, key: str, ttl_secs: int | None = None) -> 
     """A time-limited read URL, for recruiter downloads and report links."""
     try:
         return await asyncio.to_thread(
-            _client().generate_presigned_url,
+            _presign_client().generate_presigned_url,
             "get_object",
             Params={"Bucket": bucket, "Key": key},
             ExpiresIn=ttl_secs or settings.s3_presign_ttl_secs,

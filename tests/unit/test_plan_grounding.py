@@ -48,8 +48,67 @@ def _plan(*evidence: str) -> GeneratedPlan:
     )
 
 
+def _q(body: str, evidence: str) -> GeneratedQuestion:
+    return GeneratedQuestion(body=body, resume_evidence=evidence)
+
+
+def _plan_of(*questions: GeneratedQuestion) -> GeneratedPlan:
+    """A plan with arbitrary body/evidence pairs, for the cases where the two
+    must differ -- which is the whole point of the body check."""
+    return GeneratedPlan(
+        questions=list(questions),
+        criteria=[
+            GeneratedCriterion(
+                name=name,
+                weight="0.3334" if name == "depth" else "0.3333",
+                descriptors={"1": "weak", "3": "ok", "5": "strong"},
+            )
+            for name in ("depth", "ownership", "clarity")
+        ],
+    )
+
+
+# The verbatim bodies from the real failure: a MERN candidate, a
+# Python/Celery/SQLAlchemy/S3 vacancy, and a plan that asked about the vacancy.
+_JOB_DESCRIPTION_QUESTIONS = [
+    "Explain how you configured Celery workers to process background jobs for "
+    "multiple tenants while ensuring isolation and avoiding resource contention.",
+    "Describe the async SQLAlchemy query pattern you used to fetch related "
+    "records for a tenant's order history, including any indexing strategies.",
+    "What were the biggest challenges you faced when designing the multi-tenant "
+    "isolation layer, and how did you mitigate them?",
+]
+_RESUME_QUESTION = (
+    "When you scaled the service to support 30+ concurrent sessions, what "
+    "metrics did you track and what adjustments did you make to maintain it?"
+)
+
+
 def test_evidence_quoted_from_the_resume_is_grounded():
     assert _ungrounded(_plan("Socket.IO for live rooms and MongoDB"), RESUME) == []
+
+
+def test_a_real_citation_does_not_excuse_a_body_about_the_vacancy():
+    """The production bug: the model quotes a real resume line into
+    resume_evidence and then asks about the job's technology anyway. The
+    evidence check passed it because the citation IS real; only looking at the
+    body catches that the question is not about the candidate's work."""
+    plan = _plan_of(
+        *[_q(body, "Scaled to 30+ concurrent sessions") for body in _JOB_DESCRIPTION_QUESTIONS]
+    )
+    assert len(_ungrounded(plan, RESUME)) == len(_JOB_DESCRIPTION_QUESTIONS)
+
+
+def test_a_question_about_the_candidates_own_work_survives_the_body_check():
+    plan = _plan_of(_q(_RESUME_QUESTION, "Scaled to 30+ concurrent sessions"))
+    assert _ungrounded(plan, RESUME) == []
+
+
+def test_a_technology_name_ending_a_sentence_still_matches():
+    """The word pattern keeps the dot in "socket.io"; it must not also keep the
+    sentence-ending period, or "Tell me about MongoDB." stops matching the
+    resume's "MongoDB" and a grounded question reads as invented."""
+    assert _ungrounded(_plan_of(_q("Tell me about MongoDB.", "MongoDB")), RESUME) == []
 
 
 def test_reformatted_evidence_still_counts_as_grounded():
@@ -115,6 +174,14 @@ def test_the_prompt_forbids_inventing_experience():
     system, _ = _rendered()
     assert "NO INFERRED EXPERIENCE" in system
     assert "ONLY PERMITTED SOURCE OF SUBJECT MATTER" in system
+
+
+def test_the_prompt_forbids_asking_about_the_roles_stack_when_absent_from_the_resume():
+    """The exact scenario that produced the drift: a Celery/SQLAlchemy/S3 role
+    and a React/MongoDB resume. The role's stack must not become the question
+    topic just because the role names it."""
+    system, _ = _rendered()
+    assert "THE ROLE'S TECHNOLOGY IS NOT A QUESTION TOPIC" in system
 
 
 def test_the_prompt_forbids_hypotheticals_about_unlisted_technology():

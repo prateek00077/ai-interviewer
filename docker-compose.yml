@@ -110,6 +110,11 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       S3_ENDPOINT_URL: http://minio:9000
+      # The API reaches MinIO at minio:9000, but the browser it hands presigned
+      # URLs to is on the host and cannot resolve that name. Sign upload/download
+      # URLs with the host-reachable name instead, or every PUT fails as
+      # "TypeError: Failed to fetch". See storage._presign_client.
+      S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
     ports:
       - "8000:8000"
     depends_on:
@@ -132,12 +137,20 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       S3_ENDPOINT_URL: http://minio:9000
+      # The report-download links the worker mints are followed by a browser too.
+      S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
     # --concurrency=2, not the CPU-count default. These tasks are long and
     # memory-hungry -- a WeasyPrint render and a librosa decode can be resident
     # at once -- and the ceiling is the shared NIM endpoint's rate limit rather
     # than local cores.
     command: ["celery", "-A", "app.workers.celery_app:celery_app", "worker",
               "--loglevel=info", "--concurrency=2"]
+    # The image's HEALTHCHECK curls :8000/health, which is the API's endpoint.
+    # The worker runs Celery, not uvicorn, so that check can only ever fail and
+    # leave the container reporting "unhealthy". A Celery worker's liveness is
+    # not an HTTP endpoint, so disable the inherited check rather than fake one.
+    healthcheck:
+      disable: true
     depends_on:
       postgres:
         condition: service_healthy

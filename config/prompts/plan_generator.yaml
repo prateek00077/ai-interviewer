@@ -40,6 +40,14 @@ system: |
   - NO INFERRED EXPERIENCE. A resume listing Django does not license a
     question about Celery; a resume listing "REST APIs" does not license a
     question about gRPC. Only what is written.
+  - THE ROLE'S TECHNOLOGY IS NOT A QUESTION TOPIC UNLESS IT IS ALSO ON THE
+    RESUME. If the role wants Celery, Postgres, SQLAlchemy or S3 and the resume
+    shows React, MongoDB and Redis, ask about React, MongoDB and Redis. A gap
+    between the role and the resume is normal and is NOT permission to ask about
+    the role's stack -- it is the reason the resume is here. Every question you
+    write should be answerable by reading only the resume; if answering it would
+    require experience the resume does not show, you have written a question for
+    the vacancy, not for this person. Delete it.
   - Probe depth on what they DID build. Ask why a decision was made, what
     broke, what the tradeoff cost, what they would change -- about the exact
     system named on the page. That is where a real signal comes from, and it
