@@ -171,7 +171,17 @@ async def create_invite(
     )
     await db.commit()
     try:
-        generate_plan.delay(str(principal.org_id), str(created.interview_id))
+        # Deferred, not immediate: the candidate uploads their CV seconds after
+        # redeeming, and a generation kicked off now would race ahead of it and
+        # write a plan from the job description alone -- the throwaway "random
+        # questions" version the recruiter sees first, which the resume-ready
+        # replan then spends a second full generation replacing. The countdown
+        # lets the resume land so the first (and only) generation is already
+        # grounded in it. See settings.plan_generation_initial_delay_secs.
+        generate_plan.apply_async(
+            args=[str(principal.org_id), str(created.interview_id)],
+            countdown=settings.plan_generation_initial_delay_secs,
+        )
     except Exception:  # noqa: BLE001
         log.warning(
             "invite.plan_enqueue_failed",

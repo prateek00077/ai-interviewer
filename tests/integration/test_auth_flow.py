@@ -283,6 +283,37 @@ async def test_invite_round_trip_yields_an_interview_token(api_client, registere
     assert 0 < redeemed["expires_in"] <= 10 * 60
 
 
+async def test_invite_defers_plan_generation_so_the_resume_lands_first(
+    api_client, registered_org, monkeypatch
+):
+    """THE LATENCY FIX. The invite used to fire generation immediately, which
+    raced ahead of the candidate's resume and wrote a throwaway plan from the job
+    description alone -- the "random questions" a recruiter saw first, then
+    replaced seconds later by a whole second generation, doubling time-to-ready.
+
+    Deferring the invite-time run by the configured countdown lets the resume
+    land, so the first (and only) generation is already grounded in it. This
+    pins that the enqueue carries that countdown rather than firing at once.
+    """
+    from app.core.config import settings
+    from app.workers.tasks import plan_tasks
+
+    calls: list[dict] = []
+    # Instance-level patch, so it shadows the conftest class-level refusal and
+    # captures the dispatch instead of reaching the broker.
+    monkeypatch.setattr(
+        plan_tasks.generate_plan, "apply_async", lambda *a, **k: calls.append(k)
+    )
+
+    tokens = await _login(api_client, registered_org)
+    await _create_invite(api_client, tokens["access_token"])
+
+    assert len(calls) == 1, "invite must enqueue exactly one generation"
+    assert calls[0].get("countdown") == settings.plan_generation_initial_delay_secs, (
+        "invite-time generation must be deferred so the resume lands first"
+    )
+
+
 async def test_an_interview_token_is_a_candidate_not_a_recruiter(api_client, registered_org):
     tokens = await _login(api_client, registered_org)
     invite = await _create_invite(api_client, tokens["access_token"])

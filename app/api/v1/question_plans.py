@@ -94,15 +94,23 @@ async def request_generation(
     # Commit before enqueueing, or the worker can read a row that is not yet
     # visible to it.
     await db.commit()
-    # force: a recruiter clicking Generate on a plan that already exists means
-    # "do it again", not "skip because there is one".
-    generate_plan.delay(
-        str(principal.org_id),
-        str(interview_id),
-        payload.question_count,
-        payload.duration_minutes,
-        True,
-    )
+
+    # DON'T STACK GENERATIONS. A recruiter clicking Generate while a version is
+    # still GENERATING means "how is it going", not "throw it away and start
+    # over" -- and starting over would race the running one and add load to the
+    # shared model endpoint, which is how a plan ends up FAILED. So enqueue only
+    # when nothing fresh is running; the click otherwise just returns the
+    # in-flight plan to poll. Once it settles (READY or FAILED), the next click
+    # regenerates -- producing the next version. force=True because at that point
+    # a plan already exists and "Generate" means replace it.
+    if not plan_service.generation_in_flight(plan):
+        generate_plan.delay(
+            str(principal.org_id),
+            str(interview_id),
+            payload.question_count,
+            payload.duration_minutes,
+            True,
+        )
     return QuestionPlanRead.model_validate(await plan_service.get_plan(db, plan.id))
 
 

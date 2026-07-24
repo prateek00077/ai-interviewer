@@ -31,7 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError
-from app.models.interview import Interview, InterviewTurn
+from app.models.interview import Interview
 from app.models.proctoring import ProctoringVerdict
 from app.models.score import Score
 from app.modules.interview import transcript as transcript_module
@@ -202,7 +202,3 @@ def topic_names(view: RecruiterView) -> list[str]:
     rationales, evidence and descriptors all stay on this side.
     """
     return [criterion.name for criterion in view.criteria]
-
-
-def transcript_lines(view: RecruiterView) -> list[InterviewTurn]:
-    return view.turns

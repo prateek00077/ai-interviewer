@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Two stages: build wheels with a compiler present, run without one.
 #
 # WHY THE RUNTIME STAGE IS NOT `-slim` WITHOUT EXTRAS: WeasyPrint does not
@@ -12,8 +13,7 @@
 
 FROM python:3.12-slim AS builder
 
-ENV PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # build-essential for anything without a manylinux wheel; libpq-dev is not
 # needed (asyncpg is pure-python plus its own wheel) but curl is, for uv-style
@@ -23,8 +23,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# DEPENDENCY LAYER, CACHED ON pyproject ALONE. The heavy install (librosa's
+# numba/scipy stack, pipecat's opencv/PyAV/onnxruntime) is hundreds of MB of
+# wheels and minutes of work; it must not re-run every time app/ changes. Since
+# the project installs itself (hatchling, non-editable), installing it needs the
+# `app` package to exist -- so a stub package is enough to resolve and install
+# the whole dependency tree here, in a layer that depends only on pyproject.toml.
 COPY pyproject.toml README.md ./
-COPY app ./app
+RUN mkdir -p app && touch app/__init__.py
 
 # The voice extra is NOT optional for this image, despite being an extra in
 # pyproject. `app.main` imports the API router, which reaches session_manager,
@@ -36,11 +45,18 @@ COPY app ./app
 # `nim` too: the Riva client is what the offline transcript pass streams
 # through, and that runs in the worker.
 #
-# Wheels into a venv, which the runtime stage copies whole -- it never sees a
-# compiler.
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --upgrade pip && pip install '.[voice,nim]'
+# The BuildKit cache mount keeps downloaded wheels across builds, so even a
+# dependency bump re-uses what did not change instead of re-fetching the tree.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip && pip install '.[voice,nim]'
+
+# THE REAL SOURCE, THEN A FAST PACKAGE-ONLY REINSTALL. Deps are already
+# satisfied above, so --no-deps rebuilds just the ai-interviewer wheel from the
+# real app/ -- seconds, not minutes -- and this is the only layer an app/ edit
+# invalidates.
+COPY app ./app
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-deps --force-reinstall .
 
 
 FROM python:3.12-slim AS runtime

@@ -109,10 +109,16 @@ Requirements: strong Python, real experience with relational data modelling and 
 
 <section>
   <h2>5 · Question plan &amp; rubric</h2>
-  <button onclick="genPlan()">Generate (Nemotron)</button>
-  <button class="ghost" onclick="pollPlan()">Refresh</button>
+  <button class="ghost" onclick="pollPlan()">Refresh status</button>
+  <button onclick="genPlan()">Generate new version</button>
   <button class="ghost" onclick="approvePlan()">Approve</button>
-  <div class="hint">Takes 15–40s. Weights must sum to exactly 1.0.</div>
+  <div class="hint">
+    <b>Refresh status</b> only reads the plan — press it every ~10s to watch it
+    go READY; it never starts a generation. <b>Generate new version</b> queues a
+    fresh generation (the next version). Upload the résumé in step 4 <i>first</i>:
+    the plan auto-generates from it, so the first version is already grounded in
+    the CV. Takes ~30–40s. Weights sum to exactly 1.0.
+  </div>
   <pre id="out-plan">—</pre>
 </section>
 
@@ -324,24 +330,49 @@ async function pollResume(){
 }
 
 // ── 5. plan ───────────────────────────────────────────────────────
+// "Generate new version" — the ONLY button that queues a generation. While one
+// is already in flight the server returns the in-flight plan to poll rather than
+// stacking a second (which is what used to race two generations into one FAILED
+// plan); once it settles, this produces the next version.
 async function genPlan(){
-  try { show("out-plan", await call("POST",`/interviews/${S.interviewId}/plan/generate`,
-                                    {token:S.access, body:{}})); }
+  try {
+    const p = await call("POST",`/interviews/${S.interviewId}/plan/generate`,
+                         {token:S.access, body:{}});
+    S.planVersion = p.version;
+    show("out-plan", {queued:true, ...planView(p),
+      note:"Press ‘Refresh status’ every ~10s until generation_status is READY."});
+  }
   catch(e){ show("out-plan", err(e)); }
 }
+// "Refresh status" — a pure read. It never starts a generation, so pressing it
+// to check progress can't accidentally spawn another version.
 async function pollPlan(){
   try {
     const p = await call("GET",`/interviews/${S.interviewId}/plan`,{token:S.access});
     S.planVersion = p.version;
-    const total = p.criteria.reduce((a,c) => a + Number(c.weight), 0);
-    show("out-plan", {status:p.status, generation_status:p.generation_status, version:p.version,
-      // Surfaced because "are the questions actually based on the CV?" is the
-      // first thing anyone asks, and null here is the answer.
-      resume_id:p.resume_id, approved_at:p.approved_at,
-      error:p.error, weight_sum:total.toFixed(4),
-      criteria:p.criteria.map(c => `${c.name} (${c.weight})`),
-      questions:p.questions.map(q => `#${q.ordinal} [${q.competency||"-"}] ${q.body}`)});
+    show("out-plan", planView(p));
   } catch(e){ show("out-plan", err(e)); }
+}
+// One shape for both buttons, with an unambiguous line about which version is
+// where -- the thing that was impossible to tell before ("is this v1 or v2?").
+function planView(p){
+  const total = p.criteria.reduce((a,c) => a + Number(c.weight), 0);
+  const gen = p.generation_status;
+  const state = gen === "GENERATING"
+      // A generation increments version only when it finishes, so the one being
+      // written is the next number up from what is stored now.
+      ? `⏳ generating version ${p.version + 1} (showing v${p.version})`
+      : gen === "READY"    ? `✅ version ${p.version} READY`
+      : gen === "FAILED"   ? `❌ generation FAILED — press ‘Generate new version’ to retry`
+      : `version ${p.version} (${gen})`;
+  return {
+    state, status:p.status, generation_status:gen, version:p.version,
+    // Surfaced because "are the questions actually based on the CV?" is the
+    // first thing anyone asks, and null here is the answer.
+    resume_id:p.resume_id, approved_at:p.approved_at,
+    error:p.error, weight_sum:total.toFixed(4),
+    criteria:p.criteria.map(c => `${c.name} (${c.weight})`),
+    questions:p.questions.map(q => `#${q.ordinal} [${q.competency||"-"}] ${q.body}`)};
 }
 async function approvePlan(){
   try { const d = await call("POST",`/interviews/${S.interviewId}/plan/approve`,
@@ -359,6 +390,12 @@ async function joinVoice(){
     S.pc = pc;
     stream.getTracks().forEach(t => pc.addTrack(t, stream));
     pc.addTransceiver("audio", {direction:"recvonly"});
+    // Pipecat's transport signals over a data channel (RTVI events, transcripts).
+    // It only ever LISTENS for one the client opens, so this must be created
+    // before the offer -- otherwise the SDP carries no SCTP section, the channel
+    // never forms, and the server logs "data channel not established" and drops
+    // every app message it tries to send.
+    pc.createDataChannel("pipecat");
     pc.ontrack = e => { $("remoteAudio").srcObject = e.streams[0]; };
     pc.onconnectionstatechange = () => {
       $("voiceState").textContent = pc.connectionState;
@@ -467,7 +504,7 @@ async function pollFeedback(){
 async function runAll(){
   await registerOrg(); await createJob(); await invite(); await redeem();
   await genPlan();
-  show("out-plan", "generating… press Refresh in ~30s");
+  show("out-plan", "generating (no résumé in this quick path) — press ‘Refresh status’ in ~30s");
   await openProctorWS();
   setTimeout(() => sendEvent("TAB_BLUR"), 800);
   setTimeout(() => sendEvent("TAB_BLUR"), 1200);

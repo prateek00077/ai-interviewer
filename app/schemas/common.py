@@ -8,7 +8,7 @@ limit/offset API is what a recruiter UI's page controls actually want.
 
 from typing import Generic, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 T = TypeVar("T")
 
@@ -22,8 +22,3 @@ class Page(BaseModel, Generic[T]):
     total: int
     limit: int
     offset: int
-
-
-class PageParams(BaseModel):
-    limit: int = Field(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE)
-    offset: int = Field(default=0, ge=0)

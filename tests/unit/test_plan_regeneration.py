@@ -14,10 +14,12 @@ avoid.
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
 from app.models.question_plan import PlanGenerationStatus, PlanStatus
+from app.modules.question_plan import service as plan_service
 from app.workers.tasks import plan_tasks
 
 
@@ -36,7 +38,14 @@ class _FakePlan:
 
 @pytest.fixture
 def plan_lookup(monkeypatch):
-    """Stub the session and the plan read; only the guard logic is under test."""
+    """Stub the session, the plan read, and the resume-readiness lookups; only
+    the guard logic is under test.
+
+    ``holder`` controls the scenario: ``plan`` is the row the task reads;
+    ``ready_resume`` and ``incoming`` drive the resume-wait guard. By default no
+    resume is ready and none is on its way, so generation proceeds -- the tests
+    that care about waiting set ``incoming``.
+    """
     holder: dict = {}
 
     class _Session:
@@ -52,12 +61,32 @@ def plan_lookup(monkeypatch):
         return holder.get("plan")
 
     monkeypatch.setattr(plan_tasks.plan_service, "get_for_interview", _get)
+
+    async def _interview(_session, interview_id):
+        return SimpleNamespace(id=interview_id, candidate_id=uuid.uuid4())
+
+    monkeypatch.setattr(plan_tasks.interview_service, "get_interview", _interview)
+
+    async def _ready(_session, _candidate_id):
+        return holder.get("ready_resume")
+
+    monkeypatch.setattr(plan_tasks.retriever, "latest_ready_resume", _ready)
+
+    async def _incoming(_session, _candidate_id):
+        return holder.get("incoming", False)
+
+    monkeypatch.setattr(plan_tasks.retriever, "has_incoming_resume", _incoming)
     return holder
 
 
-async def _run(force: bool) -> dict:
+async def _run(force: bool, wait_for_resume: bool = True) -> dict:
     return await plan_tasks._generate(
-        uuid.uuid4(), uuid.uuid4(), question_count=8, duration_minutes=30, force=force
+        uuid.uuid4(),
+        uuid.uuid4(),
+        question_count=8,
+        duration_minutes=30,
+        force=force,
+        wait_for_resume=wait_for_resume,
     )
 
 
@@ -119,6 +148,87 @@ async def test_a_stale_generation_is_restarted(plan_lookup, monkeypatch):
     monkeypatch.setattr(plan_tasks, "_gather_context", _gather)
     with pytest.raises(RuntimeError):
         await _run(force=False)
+
+
+# --- Waiting for a resume that is still landing -----------------------------
+
+
+async def test_generation_waits_while_the_resume_is_still_parsing(plan_lookup):
+    """THE "random questions first" bug. A generation that runs while the CV is
+    still parsing writes questions from the job description alone. It must wait
+    instead, so the first plan the recruiter sees is already about the candidate."""
+    plan_lookup["plan"] = _FakePlan(PlanGenerationStatus.PENDING)
+    plan_lookup["ready_resume"] = None
+    plan_lookup["incoming"] = True
+
+    result = await _run(force=True)
+    assert "skipped" not in result
+    assert result["retry_after"] > 0
+
+
+async def test_generation_proceeds_once_the_resume_is_ready(plan_lookup, monkeypatch):
+    """A ready resume is the whole point of waiting -- once it exists, generate."""
+    plan_lookup["plan"] = _FakePlan(PlanGenerationStatus.PENDING)
+    plan_lookup["ready_resume"] = SimpleNamespace(id=uuid.uuid4())
+    plan_lookup["incoming"] = True  # a newer upload in flight must not block it
+
+    async def _gather(_session, _plan, _interview_id):
+        raise RuntimeError("stop here; the guard let us through")
+
+    monkeypatch.setattr(plan_tasks, "_gather_context", _gather)
+    with pytest.raises(RuntimeError):
+        await _run(force=True)
+
+
+async def test_the_final_attempt_generates_without_waiting(plan_lookup, monkeypatch):
+    """The wait is bounded. When the retries are spent (wait_for_resume False), a
+    plan from the job description alone beats leaving the recruiter with none."""
+    plan_lookup["plan"] = _FakePlan(PlanGenerationStatus.PENDING)
+    plan_lookup["ready_resume"] = None
+    plan_lookup["incoming"] = True
+
+    async def _gather(_session, _plan, _interview_id):
+        raise RuntimeError("stop here; the guard let us through")
+
+    monkeypatch.setattr(plan_tasks, "_gather_context", _gather)
+    with pytest.raises(RuntimeError):
+        await _run(force=True, wait_for_resume=False)
+
+
+async def test_no_incoming_resume_does_not_wait(plan_lookup, monkeypatch):
+    """The invite-time path: no CV uploaded yet, nothing to wait for. Generate a
+    plan from the job description now; the resume task replans when it lands."""
+    plan_lookup["plan"] = _FakePlan(PlanGenerationStatus.PENDING)
+    plan_lookup["incoming"] = False
+
+    async def _gather(_session, _plan, _interview_id):
+        raise RuntimeError("stop here; the guard let us through")
+
+    monkeypatch.setattr(plan_tasks, "_gather_context", _gather)
+    with pytest.raises(RuntimeError):
+        await _run(force=True)
+
+
+# --- The API-side gate: a click must not stack a second generation ----------
+
+
+def test_generation_in_flight_is_true_only_for_a_fresh_generating_plan():
+    fresh = _FakePlan(PlanGenerationStatus.GENERATING, age_secs=1)
+    assert plan_service.generation_in_flight(fresh) is True
+
+
+def test_generation_in_flight_is_false_once_the_plan_is_ready():
+    assert plan_service.generation_in_flight(_FakePlan(PlanGenerationStatus.READY)) is False
+
+
+def test_generation_in_flight_is_false_for_a_stale_generation():
+    """Past the stale window the worker is presumed dead, so a Generate click is
+    allowed to restart it rather than being told to keep polling forever."""
+    stale = _FakePlan(
+        PlanGenerationStatus.GENERATING,
+        age_secs=plan_service.GENERATION_STALE_AFTER_SECS + 60,
+    )
+    assert plan_service.generation_in_flight(stale) is False
 
 
 def test_the_resume_task_forces_its_replan():

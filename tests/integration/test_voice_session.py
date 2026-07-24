@@ -255,12 +255,21 @@ async def test_a_dropped_connection_ends_the_session(monkeypatch):
     session running until the 45-minute watchdog -- holding an ASR stream open,
     the interview stuck IN_PROGRESS, and the recording never written.
 
-    The event names are checked against the real connection class, so a pipecat
-    rename surfaces here rather than as a session that quietly never ends.
+    A drop no longer ends the session on the spot: it starts a grace timer, and
+    only a window that lapses with no reconnect abandons the interview (the
+    reconnect path itself is pinned in tests/unit/test_voice_reconnect.py). What
+    this test guards is that the real connection's drop events are wired at all,
+    so a pipecat rename surfaces here rather than as a session that never ends --
+    and that the three events pipecat fires for one drop collapse to a single
+    abandonment, not three.
     """
     import asyncio
 
+    from app.core.config import settings
     from app.modules.voice import session_manager, transport
+
+    monkeypatch.setattr(settings, "voice_reconnect_grace_secs", 0.05)
+    session_manager._pending_abandon.clear()
 
     connection = transport.create_connection()
     session = session_manager.VoiceSession(
@@ -281,16 +290,19 @@ async def test_a_dropped_connection_ends_the_session(monkeypatch):
     monkeypatch.setattr(session_manager, "stop", _fake_stop)
     session_manager._wire_disconnect(session)
 
-    # Every drop event must trigger a stop, not just the tidy one. Called the
-    # way pipecat calls it: no extra args, the emitting object is supplied by
-    # the dispatcher.
+    # Called the way pipecat calls it: no extra args, the emitting object is
+    # supplied by the dispatcher. All three fire for one drop.
     for event in ("disconnected", "closed", "failed"):
         await connection._call_event_handler(event)
-    # Two task hops: the connection schedules the handler, and the handler
-    # schedules the stop. One yield is not enough to drain both.
-    await asyncio.sleep(0.05)
 
-    assert len(stopped) == 3, f"a drop event was not wired: {stopped}"
-    assert {reason for _, reason in stopped} == {"abandoned"}, (
+    # Before the grace window: nothing abandoned yet -- the candidate might be
+    # reconnecting.
+    await asyncio.sleep(0.01)
+    assert stopped == [], "a drop abandoned the interview before the grace window"
+
+    # After it lapses with nobody back: exactly one abandonment, not three.
+    await asyncio.sleep(0.1)
+    assert len(stopped) == 1, f"one drop must abandon once, got: {stopped}"
+    assert stopped[0][1] == "abandoned", (
         "a dropped call must be distinguishable from one that finished"
     )

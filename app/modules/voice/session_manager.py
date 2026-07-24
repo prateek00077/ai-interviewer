@@ -94,6 +94,49 @@ class VoiceSession:
 # which is what a candidate reconnecting after a crash actually looks like.
 _sessions: dict[uuid.UUID, VoiceSession] = {}
 
+# interview_id -> the timer that will abandon it if nobody reconnects. A dropped
+# connection schedules one of these instead of abandoning immediately; a
+# reconnect within the grace window cancels it. See _schedule_abandon.
+_pending_abandon: dict[uuid.UUID, asyncio.Task] = {}
+
+
+async def _abandon_after_grace(interview_id: uuid.UUID) -> None:
+    """Abandon an interview only if no reconnect arrives within the grace window.
+
+    The whole point is that a dropped call is ambiguous: a candidate whose wifi
+    blipped or who reloaded the tab is reconnecting, not leaving. Abandoning on
+    the first drop terminalises the interview, and the rejoin that lands a second
+    later then races a terminal status and is locked out -- exactly what the
+    multi-use invite and the checkpoint exist to prevent. So hold the drop, and
+    let a reconnect cancel this.
+    """
+    try:
+        await asyncio.sleep(settings.voice_reconnect_grace_secs)
+    except asyncio.CancelledError:
+        # A reconnect superseded the session; the interview stays live.
+        return
+    _pending_abandon.pop(interview_id, None)
+    await stop(interview_id, reason="abandoned")
+
+
+def _schedule_abandon(interview_id: uuid.UUID) -> None:
+    """Start the abandon timer for a dropped connection, once.
+
+    De-duplicated because pipecat fires ``disconnected``, then ``closed``, then
+    ``failed`` for a single drop, and one timer is enough.
+    """
+    if interview_id in _pending_abandon:
+        return
+    _pending_abandon[interview_id] = asyncio.create_task(_abandon_after_grace(interview_id))
+
+
+def _cancel_pending_abandon(interview_id: uuid.UUID) -> None:
+    """A reconnect arrived: call off the abandonment so the old session can be
+    superseded (kept alive, resumed) rather than ended."""
+    task = _pending_abandon.pop(interview_id, None)
+    if task is not None:
+        task.cancel()
+
 
 def active_count() -> int:
     return len(_sessions)
@@ -117,6 +160,11 @@ async def start(
     published and ``interview/service`` decides what that means for the status
     and freezes the plan -- this module never writes an interview status.
     """
+    # A reconnect within the grace window: call off the pending abandonment
+    # before it can fire, so the drop this rejoin is answering never ends the
+    # interview. Then supersede the old session (kept alive during the wait) so
+    # the checkpoint carries over.
+    _cancel_pending_abandon(interview_id)
     await stop(interview_id, reason=SUPERSEDED)
 
     # Resume position before anything else: the prompt is built from the plan,
@@ -203,9 +251,13 @@ def _wire_disconnect(session: VoiceSession) -> None:
     running until the 45-minute watchdog fires -- holding an ASR stream open,
     the interview stuck IN_PROGRESS, and the recording unwritten.
 
-    "abandoned" rather than "completed": the candidate left, and a recruiter
-    reading the report should be able to tell the difference between an
-    interview that finished and one that stopped.
+    NOT abandoned on the spot: a drop is ambiguous -- a reload or a wifi blip
+    looks identical to leaving. The interview is abandoned only after a grace
+    window with no reconnect (see _schedule_abandon); a rejoin inside it
+    supersedes this session instead, and the candidate carries on from where the
+    checkpoint left them. "abandoned" rather than "completed" once the window
+    lapses: the candidate left, and a recruiter reading the report should be able
+    to tell an interview that finished from one that stopped.
     """
 
     # *args because pipecat invokes handlers with the emitting object plus
@@ -213,10 +265,19 @@ def _wire_disconnect(session: VoiceSession) -> None:
     # signature raises inside the handler, where the only symptom is a log line
     # and a session that never ends.
     async def _on_drop(*_args) -> None:
-        # Scheduled rather than awaited: this fires from inside the connection's
-        # own callback, and stop() waits on the session task, which is what is
-        # unwinding. Awaiting here would deadlock the teardown it is triggering.
-        asyncio.create_task(stop(session.interview_id, reason="abandoned"))
+        # Only a genuine drop schedules an abandon. A session already being ended
+        # deliberately -- superseded by a reconnect, timed out, crashed -- has
+        # had stop() set its reason away from the "completed" default, and its
+        # own teardown closes the connection, which fires this same handler; the
+        # close of a superseded session must NOT schedule an abandon, or it would
+        # terminate the interview the replacing session is now using.
+        #
+        # Scheduling, not awaiting: the timer only sleeps and then calls stop(),
+        # so it never awaits the session task from inside this callback the way
+        # awaiting stop() here would -- which is what would deadlock the teardown.
+        if session._stopped or session._reason != "completed":
+            return
+        _schedule_abandon(session.interview_id)
 
     for event in ("disconnected", "closed", "failed"):
         session.connection.add_event_handler(event, _on_drop)
@@ -380,6 +441,11 @@ async def _finalise(session: VoiceSession, redis: Redis | None) -> None:
         return
     session._stopped = True
     _sessions.pop(session.interview_id, None)
+    # Any abandon timer this interview had is moot now that a session is ending
+    # cleanly: either this IS that timer firing (already removed from the map, so
+    # a no-op) or a deliberate stop got here first and the timer must not fire
+    # later against whatever session holds the interview by then.
+    _cancel_pending_abandon(session.interview_id)
 
     # A reply cut off mid-sentence by a disconnect still belongs in the record.
     session.built.observer.flush_bot_turn()

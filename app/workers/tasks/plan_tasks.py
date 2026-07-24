@@ -31,13 +31,12 @@ log = structlog.get_logger(__name__)
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECS = 30
 
-# Past this, a GENERATING plan is assumed to belong to a worker that died
-# rather than to one still working. Comfortably longer than a real generation
-# (two model calls, ~30s each) and shorter than a recruiter's patience.
-GENERATION_STALE_AFTER_SECS = 300
+# The stale-generation window lives in plan_service so the API shares it.
+GENERATION_STALE_AFTER_SECS = plan_service.GENERATION_STALE_AFTER_SECS
 
-# How long a forced regeneration waits before checking whether the in-flight
-# generation has finished. A generation is two model calls, ~30s each.
+# How long to wait before re-checking an in-flight generation, or a resume that
+# is still being parsed, has finished. A generation is two model calls, ~30s
+# each; a resume parse is usually quicker.
 GENERATION_RETRY_AFTER_SECS = 30
 
 
@@ -74,12 +73,16 @@ def generate_plan(  # type: ignore[no-untyped-def]
             question_count=question_count,
             duration_minutes=duration_minutes,
             force=force,
+            # Wait for a still-parsing resume only while there are retries left to
+            # wait with. On the final attempt, generate from whatever is ready --
+            # a plan from the job description alone beats no plan at all.
+            wait_for_resume=self.request.retries < MAX_RETRIES,
         )
     )
     if result.get("retry_after"):
-        # A generation is genuinely in flight. Wait for it rather than racing it
-        # or dropping this request -- a forced replan has new input and must not
-        # be lost just because it arrived mid-flight.
+        # Either a generation is in flight (a forced replan must not race it or be
+        # dropped), or the candidate's resume is still parsing (generating now
+        # would write the generic plan we are trying to avoid). Either way, wait.
         raise self.retry(countdown=result["retry_after"], max_retries=MAX_RETRIES)
     return result
 
@@ -91,6 +94,7 @@ async def _generate(
     question_count: int,
     duration_minutes: int,
     force: bool = False,
+    wait_for_resume: bool = True,
 ) -> dict:
     async with tenant_session(org_id, "system", None) as session:
         plan = await plan_service.get_for_interview(session, interview_id)
@@ -135,6 +139,30 @@ async def _generate(
                 plan_id=str(plan.id),
                 age_secs=round(age.total_seconds()),
             )
+
+        # DON'T WRITE A GENERIC PLAN WHILE THE CV IS STILL LANDING. Checked here,
+        # once this task is the one that will actually generate (past the dedup
+        # above), not before -- a duplicate or an in-flight generation is handled
+        # first. The candidate uploads after redeeming, so a generation kicked off
+        # now can find no ready resume and write questions from the job
+        # description alone, which the recruiter then sees as "random" questions
+        # until the resume finishes and a replan corrects them. If a resume is
+        # uploaded and still parsing, wait for it so the FIRST plan is already
+        # about the candidate. Bounded: once retries run out (wait_for_resume
+        # False) we generate regardless, and a resume that fails to parse settles
+        # the wait rather than stalling it.
+        if wait_for_resume:
+            interview = await interview_service.get_interview(session, interview_id)
+            ready = await retriever.latest_ready_resume(session, interview.candidate_id)
+            if ready is None and await retriever.has_incoming_resume(
+                session, interview.candidate_id
+            ):
+                log.info(
+                    "plan_generation_waiting_for_resume",
+                    plan_id=str(plan.id),
+                    interview_id=str(interview_id),
+                )
+                return {"plan_id": str(plan.id), "retry_after": GENERATION_RETRY_AFTER_SECS}
 
         plan.generation_status = PlanGenerationStatus.GENERATING
         plan.error = None

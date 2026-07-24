@@ -18,7 +18,7 @@ human who made it.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import structlog
@@ -50,6 +50,30 @@ class PlanFrozenError(ConflictError):
 class PlanVersionConflictError(ConflictError):
     code = "plan_version_conflict"
     message = "The plan changed since you loaded it. Reload and reapply your edit."
+
+
+# Past this, a GENERATING plan is assumed to belong to a worker that died rather
+# than one still working. Comfortably longer than a real generation (two model
+# calls, ~30s each) and shorter than a recruiter's patience. Lives here rather
+# than in the task because both the task (to restart a dead generation) and the
+# API (to decide whether a Generate click should start a new one) need the same
+# threshold, and two copies would drift.
+GENERATION_STALE_AFTER_SECS = 300
+
+
+def generation_in_flight(plan: QuestionPlan) -> bool:
+    """Whether a fresh generation is running for this plan right now.
+
+    True means a Generate click should poll rather than start another: two
+    generations for one plan race to write the same rows and hammer the shared
+    model endpoint into shedding, which is how a plan ends up FAILED. Once the
+    current attempt settles (READY or FAILED), or has been GENERATING so long the
+    worker is presumed dead, a new generation is allowed.
+    """
+    if plan.generation_status is not PlanGenerationStatus.GENERATING:
+        return False
+    age = datetime.now(UTC) - plan.updated_at
+    return age < timedelta(seconds=GENERATION_STALE_AFTER_SECS)
 
 
 # --- Reads ------------------------------------------------------------------

@@ -17,7 +17,6 @@ Two rules this module exists to enforce:
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 import structlog
 from sqlalchemy import text
@@ -222,7 +221,3 @@ async def logout(store: RefreshTokenStore, raw_refresh_token: str) -> None:
 async def logout_all(store: RefreshTokenStore, user_id: uuid.UUID) -> int:
     """Revoke every session for a user. Requires a valid access token."""
     return await store.revoke_all_for_user(user_id)
-
-
-def utcnow() -> datetime:
-    return datetime.now(UTC)

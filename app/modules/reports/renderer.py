@@ -50,6 +50,20 @@ def render_html(template_name: str, view: object) -> str:
     return _environment().get_template(template_name).render(v=view)
 
 
+@lru_cache(maxsize=1)
+def _font_config() -> object:
+    """One FontConfiguration, built lazily and reused across every render.
+
+    Constructing it enumerates the system fonts; WeasyPrint's own guidance is to
+    build one and reuse it for every document rather than pay that scan per PDF.
+    Deferred import so weasyprint and its ctypes text stack load only in the
+    worker that actually renders, not on every process that imports this module.
+    """
+    from weasyprint.text.fonts import FontConfiguration
+
+    return FontConfiguration()
+
+
 def _to_pdf(html: str) -> bytes:
     """Blocking. Kept separate so tests can render HTML without paying for a PDF."""
     from weasyprint import HTML
@@ -58,7 +72,7 @@ def _to_pdf(html: str) -> bytes:
     # at the template directory rather than leaving it None means a stray
     # relative src cannot be resolved against the process's cwd, which in a
     # worker is the application root.
-    return HTML(string=html, base_url=str(TEMPLATE_DIR)).write_pdf()
+    return HTML(string=html, base_url=str(TEMPLATE_DIR)).write_pdf(font_config=_font_config())
 
 
 async def render_pdf(template_name: str, view: object) -> bytes:

@@ -123,7 +123,7 @@ async def ready(request: Request, response: Response) -> dict[str, Any]:
 
 
 @router.get("/metrics", summary="Operational counters")
-async def metrics(request: Request) -> dict[str, Any]:
+async def metrics() -> dict[str, Any]:
     """A small JSON snapshot rather than a Prometheus exposition format.
 
     Deliberate: nothing in this deployment scrapes Prometheus yet, and adding

@@ -65,6 +65,30 @@ async def latest_ready_resume(session: AsyncSession, candidate_id: uuid.UUID) ->
     ).scalar_one_or_none()
 
 
+async def has_incoming_resume(session: AsyncSession, candidate_id: uuid.UUID) -> bool:
+    """True when a CV is uploaded and still being processed -- UPLOADED or PARSING.
+
+    The point is the race the plan generator loses: a recruiter (or the invite)
+    starts generation while the candidate's upload is mid-flight, so
+    ``latest_ready_resume`` finds nothing and the plan is written from the job
+    description alone. That plan then has to be thrown away and regenerated once
+    the CV lands, and the recruiter sees generic questions in between.
+
+    NOT PENDING: a presigned URL that was issued but never uploaded may never be,
+    so waiting on it would stall a plan forever. NOT READY/FAILED either -- those
+    are settled, and there is nothing left to wait for.
+    """
+    row = await session.execute(
+        select(Resume.id)
+        .where(
+            Resume.candidate_id == candidate_id,
+            Resume.status.in_((ResumeStatus.UPLOADED, ResumeStatus.PARSING)),
+        )
+        .limit(1)
+    )
+    return row.scalar_one_or_none() is not None
+
+
 async def search(
     session: AsyncSession,
     *,

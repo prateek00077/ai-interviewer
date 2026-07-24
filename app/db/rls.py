@@ -130,7 +130,6 @@ DROP_AUTH_LOOKUP = [
 # app.actor_kind() lie about who touched a row and destroys the audit value of
 # the GUC. Widening the predicate is the honest version; the org boundary is
 # unchanged, because a system session still gets exactly one org_id.
-STAFF_KINDS = ("user", "system")
 _IS_STAFF = f"{APP_SCHEMA}.actor_kind() = ANY (ARRAY['user','system'])"
 
 

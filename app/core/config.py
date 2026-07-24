@@ -95,6 +95,13 @@ class Settings(BaseSettings):
     # How many times to check in before concluding nobody is there. Two nudges
     # then end: a third would be badgering someone who has clearly gone.
     voice_max_idle_nudges: int = 2
+    # A dropped connection is held this long before the interview is abandoned. A
+    # candidate whose wifi blips or who reloads the tab rejoins within it and the
+    # new session supersedes the old one -- kept alive, resumed from the
+    # checkpoint -- rather than racing its abandonment and being locked out of a
+    # terminal interview. Kept below voice_idle_nudge_secs so a stale session's
+    # idle check-in cannot fire into the dead connection during the wait.
+    voice_reconnect_grace_secs: float = 20.0
     # Magpie's cold start is real (687ms measured). Session start waits for a
     # warm TTS rather than opening with dead air.
     connect_prewarm_timeout_secs: float = 45.0
@@ -144,6 +151,19 @@ class Settings(BaseSettings):
     # --- Celery ---
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
+
+    # How long the invite-time plan generation waits before it runs. The
+    # candidate uploads their CV seconds after redeeming the invite, but the
+    # invite fires generation immediately -- so without this delay the first
+    # generation races ahead of the resume, writes a throwaway plan from the job
+    # description alone (the "random questions" a recruiter sees first), and the
+    # resume-ready replan then runs a SECOND full generation to correct it. That
+    # doubled the time-to-ready to minutes. Deferring the invite-time run by a
+    # few seconds lets the resume land first, so the FIRST generation is already
+    # about the candidate and only one runs. Safe to wait: a candidate who
+    # somehow starts within the window just improvises (start() does not require
+    # a plan), and a plan is regenerable from the console at any time.
+    plan_generation_initial_delay_secs: int = 15
 
     # --- NVIDIA NIM ---
     # One key covers LLM (REST), ASR (gRPC) and TTS (gRPC).

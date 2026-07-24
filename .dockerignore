@@ -1,0 +1,45 @@
+# The build only COPYs named directories (app, alembic, config, scripts, static),
+# so nothing here changes the final image -- but without it the ENTIRE working
+# tree is streamed to the Docker daemon as build context on every build. With a
+# local .venv that is well over a gigabyte, that upload dominates the build time
+# and quietly busts the layer cache. Keep the context to source only.
+
+# The local virtualenv -- the single biggest offender (1GB+).
+.venv/
+venv/
+
+# Python caches and build artifacts.
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Version control and IDE.
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# Secrets and local runtime state -- must never enter the build context.
+.env
+.env.*
+!.env.example
+.local-run/
+*.log
+
+# Tests and fixtures are not needed to build or run the image.
+tests/
+
+# Docs and local tooling.
+*.md
+!README.md
+docker-run-script.sh
+local-run-script.sh
+docker-stop-script.sh
+setup.sh

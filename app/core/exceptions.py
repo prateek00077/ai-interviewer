@@ -48,11 +48,6 @@ class InvalidTokenError(AuthenticationError):
     message = "Token is invalid or has expired."
 
 
-class TokenReuseDetectedError(AuthenticationError):
-    code = "refresh_reuse_detected"
-    message = "Session revoked. Please sign in again."
-
-
 # --- 403 / 404 / 409 / 410 / 429 ---
 class PermissionDeniedError(AppError):
     status_code = 403
